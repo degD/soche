@@ -7,7 +7,10 @@ authors = [
     { name = "degD", email = "degd@degd.net" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "numpy>=2.5.4",
+    "scipy>=1.18.1",
+]
 
 [project.scripts]
 soche = "soche:main"

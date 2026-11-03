@@ -18,6 +18,12 @@ SOCHE will run a chord extraction algorithm repeatedly on a given pop song. The 
 
 Some research suggest that having the song key note when running the chord extraction can improve test results. Therefore I may build a tool to find a key note of a pop song.
 
+Target song format is mono channel, 44.1kHz, and 16-bit, WAV files. Songs are converted to this format prior to processing. Use the following command for conversion:
+
+```
+ffmpeg -i 111.mp3 -acodec pcm_s16le -ac 1 -ar 16000 out.wav
+```
+
 ## References
 
 
