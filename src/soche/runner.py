@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 from scipy.io import wavfile
 
+from soche.algorithms.demo import SocheAlgorithmDemo
+
 
 def convertSong(inputPath: Path, outPath: Path) -> None:
     sp.run([
@@ -86,3 +88,9 @@ class SocheMerger:
             normalized = sum(c.value[0] for c in sample) / len(sample)
             chordsNormalized.extend([getClosestChord(normalized)] * len(sample))
         return chordsNormalized
+
+
+if __name__ == "__main__":
+    algo = SocheAlgorithmDemo()
+    soche = Soche(algo, 1000, Path("audio.wav"))
+    soche.process()
