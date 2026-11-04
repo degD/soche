@@ -30,10 +30,18 @@ class SocheChordClasses(Enum):
     B_B = 12,
 
 
+def getClosestChord(n: float) -> SocheChordClasses:
+    chords = []
+    for c in SocheChordClasses:
+        chords.append((c.value[0], abs(c.value[0] - n)))
+    v = min(chords, key=lambda c: c[1])[0]
+    return SocheChordClasses[v]
+
+
 class SocheAlgorithmInterface(ABC):
 
     @abstractmethod
-    def init(self) -> None:
+    def __init__(self):
         pass
 
     @abstractmethod
@@ -60,3 +68,21 @@ class Soche:
             c = self.algorithm.processSample(sample)
             chords.append(c)
         return chords
+
+
+class SocheMerger:
+
+    def __init__(self,
+        chordsList: list[SocheChordClasses],
+        threshold: int
+    ):
+        self.chords = chordsList
+        self.threshold = threshold
+
+    def process(self) -> list[SocheChordClasses]:
+        chordsNormalized = []
+        for i in range(0, len(self.chords), self.threshold):
+            sample = self.chords[i:(i+self.threshold)]
+            normalized = sum(c.value[0] for c in sample) / len(sample)
+            chordsNormalized.extend([getClosestChord(normalized)] * len(sample))
+        return chordsNormalized
