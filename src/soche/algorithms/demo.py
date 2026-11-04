@@ -10,5 +10,5 @@ class SocheAlgorithmDemo(SocheAlgorithmInterface):
         pass
 
     def processSample(self, sample: np.ndarray):
-        print("Hello world! (A)")
+        print(f"Hello world! (A) -> {len(sample)}")
         return SocheChordClasses.A
