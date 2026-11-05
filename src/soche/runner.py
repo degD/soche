@@ -62,6 +62,7 @@ class Soche:
 
     def process(self) -> list[SocheChordClasses]:
         sr, data = wavfile.read(self.songPath)
+        data = data.astype(np.float32)
         chords = []
         step = round(sr * self.periodMs / 1000)
         for i in range(0, len(data), step):
