@@ -1,0 +1,3 @@
+
+SAMPLE_RATE = 16_000
+CHANNELS    = 1

@@ -33,5 +33,5 @@ def read_wave(wave_path: str | Path) -> npt.NDArray[np.float32]:
 
 
 if __name__ == "__main__":
-    # info_wave("audio/audio.wav")
+    info_wave("audio/audio.wav")
     print(read_wave("audio/audio.wav"))
