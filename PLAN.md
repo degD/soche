@@ -7,7 +7,7 @@
 
 ## Phase 1: Audio input
 - Read mono WAV files with the `wave` module and convert them to float numpy arrays in the range −1 to 1.
-- Write a tool for writing WAV files, to create test signals.
+- Write a tool for writing WAV files, and to create test signals.
 - Test if signal write and read preserves its values.
 
 ## Phase 2: Synthetic test signals
