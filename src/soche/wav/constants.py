@@ -1,3 +1,4 @@
 
 SAMPLE_RATE = 16_000
 CHANNELS    = 1
+MAXVAL      = 32_768.0

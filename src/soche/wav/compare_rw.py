@@ -1,8 +1,8 @@
 
 import numpy as np
 
-from soche.read_wave import read_wave
-from soche.write_wave import (
+from soche.wav.read_wave import read_wave
+from soche.wav.write_wave import (
     de_normalize_float_array,
     generate_sin_array_normalized,
     write_wave,
