@@ -2,7 +2,7 @@
 import numpy as np
 import numpy.typing as npt
 
-from soche.chord.constants import NOTES_FREQ_MINIMAL
+from soche.chord.constants import CHORDS_MINIMAL, NOTES_FREQ_MINIMAL
 from soche.wav.constants import SAMPLE_RATE
 from soche.wav.write_wave import generate_sin_array_normalized, write_wave
 
@@ -27,15 +27,19 @@ def multi_array_sum(arrays: tuple[npt.NDArray[np.float32], ...]) -> npt.NDArray[
     return s
 
 
+def generate_chord(amp: float, notes_str: str, duration_sec: float, shift_sec: float) -> npt.NDArray[np.float32]:
+    chords = []
+    for n in notes_str.split(","):
+        s = generate_sin_array_normalized_with_shift(amp, NOTES_FREQ_MINIMAL[n], duration_sec, shift_sec)
+        chords.append(s)
+    return multi_array_sum(tuple(chords))
+
+
 if __name__ == "__main__":
-    c = generate_sin_array_normalized_with_shift(0.1, NOTES_FREQ_MINIMAL["C"], 1, 0)
-    e = generate_sin_array_normalized_with_shift(0.2, NOTES_FREQ_MINIMAL["E"], 1, 1)
-    g = generate_sin_array_normalized_with_shift(0.3, NOTES_FREQ_MINIMAL["G"], 1, 2)
+    am = generate_chord(0.1, CHORDS_MINIMAL["Am"], 1, 0)
+    g  = generate_chord(0.1, CHORDS_MINIMAL["G"], 1, 1)
+    f  = generate_chord(0.1, CHORDS_MINIMAL["F"], 1, 2)
+    e  = generate_chord(0.1, CHORDS_MINIMAL["E"], 1, 3)
 
-    chord_c = generate_sin_array_normalized_with_shift(3, NOTES_FREQ_MINIMAL["C"], 3, 3)
-    chord_e = generate_sin_array_normalized_with_shift(3, NOTES_FREQ_MINIMAL["E"], 3, 3)
-    chord_g = generate_sin_array_normalized_with_shift(3, NOTES_FREQ_MINIMAL["G"], 3, 3)
-
-    chord = multi_array_sum((chord_c, chord_e, chord_g))
-    f = multi_array_sum((c, e, g, chord))
-    write_wave("audio/c_chord.wav", f)
+    f = multi_array_sum((e, am, f, g))
+    write_wave("audio/progression.wav", f)
