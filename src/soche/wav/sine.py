@@ -2,8 +2,7 @@
 import numpy as np
 import numpy.typing as npt
 
-from soche.chord.constants import CHORDS_MINIMAL, NOTES_FREQ_MINIMAL
-from soche.wav.constants import SAMPLE_RATE
+from soche.wav.constants import CHORDS_MINIMAL, NOTES_FREQ_MINIMAL, SAMPLE_RATE
 from soche.wav.write_wave import generate_sin_array_normalized, write_wave
 
 
