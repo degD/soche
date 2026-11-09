@@ -24,6 +24,16 @@ def fft_signal_and_plot(signal: npt.NDArray[np.float32], min_freq: float, max_fr
     plt.close()
 
 
+def fft_signal_and_specgram(signal: npt.NDArray[np.float32], min_freq: float, max_freq: float) -> None:
+    plt.specgram(signal, NFFT=1024, Fs=16000)   # specgram can run fft on its own
+    plt.grid()                                  # Fs is sample rate, NFFT is slice size
+    plt.ylim(min_freq, max_freq)                # large NFFT: higher freq resolution, but poor time resolution
+    plt.ylabel("Frequency (Hz)")
+    plt.xlabel("Time (s)")
+    plt.show()
+    plt.close()
+
+
 if __name__ == "__main__":
-    f = generate_sin_array_normalized(0.5, 220, 2)
-    fft_signal_and_plot(f, 200, 400)
+    f = generate_sin_array_normalized(0.5, 300, 2)
+    fft_signal_and_specgram(f, 0, 1000)

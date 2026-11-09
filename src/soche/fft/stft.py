@@ -9,16 +9,15 @@ from soche.wav.sine import generate_chord, multi_array_sum
 from soche.wav.write_wave import generate_sin_array_normalized
 
 
-def stft(signal):
-    frames = sliding_window_view(signal, 4000)[::500]   # 4000 is window size, 500 is hop size
-    frames_windowed = frames * np.hanning(4000)         # TODO: sliding view funcion is slow for prod
+def stft(signal: npt.NDArray[np.float32], window_size: int, hop_size: int):
+    stft_frames = sliding_window_view(signal, window_size)[::hop_size]   # TODO: sliding view funcion is slow for prod
+    frames_windowed = stft_frames # * np.hanning(window_size)
     return np.fft.rfft(frames_windowed)
 
 
-def plot_stft(signal):
-    signal_stft = stft(signal)
-    plt.plot(signal_stft[10])
-    plt.show()
+def plot_stft(stft_frames):
+    fig, ax = plt.subplots()
+    ax.specgram()
 
 
 if __name__ == "__main__":
