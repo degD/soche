@@ -3,8 +3,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 
+from soche.fft import test_signals
 from soche.wav.constants import SAMPLE_RATE
-from soche.wav.write_wave import generate_sin_array_normalized
 
 # for a signal of n samples, hightest freq is sample_rate / 2.
 # there are 16_000 samples each second. for representing a wave.
@@ -24,10 +24,22 @@ def fft_signal_and_plot(signal: npt.NDArray[np.float32], min_freq: float, max_fr
     plt.close()
 
 
-def fft_signal_and_specgram(signal: npt.NDArray[np.float32], min_freq: float, max_freq: float) -> None:
-    plt.specgram(signal, NFFT=1024, Fs=16000)   # specgram can run fft on its own
-    plt.grid()                                  # Fs is sample rate, NFFT is slice size
-    plt.ylim(min_freq, max_freq)                # large NFFT: higher freq resolution, but poor time resolution
+def fft_signal_and_specgram(
+    signal: npt.NDArray[np.float32],
+    min_freq: float,
+    max_freq: float,
+    window_size: int,
+    hop_size: int
+) -> None:
+    plt.specgram(
+        signal,                           # specgram can run fft on its own
+        NFFT=window_size,                 # Fs is sample rate, NFFT is slice size
+        Fs=SAMPLE_RATE,                   # large NFFT: higher freq resolution, but poor time resolution
+        noverlap=window_size - hop_size,  # noverlap = window_size - hop_size
+        window=np.hanning(window_size)    # upright lines are a result of synthetic sound generation
+    )
+    plt.grid()
+    plt.ylim(min_freq, max_freq)
     plt.ylabel("Frequency (Hz)")
     plt.xlabel("Time (s)")
     plt.show()
@@ -35,5 +47,5 @@ def fft_signal_and_specgram(signal: npt.NDArray[np.float32], min_freq: float, ma
 
 
 if __name__ == "__main__":
-    f = generate_sin_array_normalized(0.5, 300, 2)
-    fft_signal_and_specgram(f, 0, 1000)
+    f = test_signals.spanish()
+    fft_signal_and_specgram(f, 200, 600, 2048, 1024)
