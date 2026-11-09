@@ -15,13 +15,13 @@
 - Generate a set of known progressions (for example, C–Am–F–G).
 - Add noise and amplitude changes to check robustness.
 
-## [ ] Phase 3: Short-time Fourier transform
+## [x] Phase 3: Short-time Fourier transform
 - Implement framing with a hop of 512 samples and a window of 4096 samples, using a strided view.
 - Apply a Hann window and compute the real FFT for each frame.
 - Produce a magnitude spectrogram and plot it with matplotlib.
 - Verify that a pure sine at a known frequency peaks at the expected bin.
 
-## [ ] Phase 4: Chroma features
+## [x] Phase 4: Chroma features
 - Convert frequency to MIDI note number, and MIDI note number to pitch class (0 to 11).
 - Build a filterbank that maps FFT bins to pitch classes, with each frequency contributing to its nearest semitone.
 - Compute the chroma matrix (12 × frames) by multiplying the spectrogram with the filterbank.

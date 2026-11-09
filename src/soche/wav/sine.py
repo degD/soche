@@ -10,6 +10,7 @@ def generate_sin_array_normalized_with_shift(amp: float, freq: float, duration_s
     shift = np.zeros(int(SAMPLE_RATE * shift_sec), np.float32)
     array = generate_sin_array_normalized(amp, freq, duration_sec)
     return np.concat((shift, array))
+    # TODO: generated sine waves end abruptly and that causes issues in energy levels. better to add a fade in/out to signals
 
 
 def array_sum(a1: npt.NDArray[np.float32], a2: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:

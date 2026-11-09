@@ -25,8 +25,9 @@ def spanish():
     g  = generate_chord(0.1, CHORDS_MINIMAL["G"], 1, 1)
     f  = generate_chord(0.1, CHORDS_MINIMAL["F"], 1, 2)
     e  = generate_chord(0.1, CHORDS_MINIMAL["E"], 1, 3)
-    f = multi_array_sum((e, am, f, g))
-    return f
+    s = multi_array_sum((e, am, f, g))
+    return s
+
 
 def twinkle_twinkle_star():
     n = []
@@ -46,3 +47,7 @@ def twinkle_twinkle_star():
     n.append(generate_sin_array_normalized_with_shift(0.6, NOTES_FREQ_MINIMAL["G"], 0.2, 2.6))
     f = multi_array_sum(tuple(n))
     return f
+
+
+# TODO: add more test signals
+# TODO: add noise to test signals
