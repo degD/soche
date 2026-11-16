@@ -4,8 +4,8 @@ import numpy as np
 import numpy.typing as npt
 from numpy.lib.stride_tricks import sliding_window_view
 
+from soche.fft.test_signals import spanish
 from soche.wav.constants import SAMPLE_RATE
-from soche.wav.read_wave import read_wave
 
 
 def stft(signal: npt.NDArray[np.float32], window_size: int, hop_size: int) -> npt.NDArray:
@@ -14,11 +14,11 @@ def stft(signal: npt.NDArray[np.float32], window_size: int, hop_size: int) -> np
     return np.fft.rfft(frames_windowed)                     # results in (num_frames, freq_bins) matrix
 
 
-def calc_chroma(stft_matrix: npt.NDArray, window_size: int) -> npt.NDArray:
+def calc_chroma(stft_matrix: npt.NDArray, window_size: int, ref_freq: int = 440) -> npt.NDArray:
     freqs = np.fft.rfftfreq(window_size, 1 / SAMPLE_RATE)   # get frequency values for the range
     filterbank = np.zeros((12, len(freqs)))                 # filtering, there are 12 notes
-    for i in range(1, len(freqs)):                          # convert frequency values to midi note numbers, and to pitch classes (notes)
-        midi = round(69 + 12 * np.log2(freqs[i] / 440))     # puts all frequencies to matching bins
+    for i in range(1, len(freqs)):                              # convert frequency values to midi note numbers, and to pitch classes (notes)
+        midi = round(69 + 12 * np.log2(freqs[i] / ref_freq))    # puts all frequencies to matching bins
         pitch_class = midi % 12
         filterbank[pitch_class, i] = 1.0                # filterbank is (12, freq_bins) and stft_matrix is (num_frames, freq_bins)
     chroma = filterbank @ np.abs(stft_matrix).T         # get energy levels for each note for each frame
@@ -43,5 +43,7 @@ def plot_chroma(chroma: npt.NDArray) -> None:
 if __name__ == "__main__":
     window_size = 4096
     hop_size = 512
-    f = read_wave("audio/guitar_prog_web.wav")
-    plot_chroma(calc_chroma(stft(f, window_size, hop_size), window_size))
+    ref_freq = 400
+    # f = read_wave("audio/guitar_prog_web.wav")
+    f = spanish()
+    plot_chroma(calc_chroma(stft(f, window_size, hop_size), window_size, ref_freq))
