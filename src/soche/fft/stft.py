@@ -10,8 +10,9 @@ from soche.wav.constants import SAMPLE_RATE
 
 def stft(signal: npt.NDArray[np.float32], window_size: int, hop_size: int) -> npt.NDArray:
     stft_frames = sliding_window_view(signal, window_size)[::hop_size]
-    frames_windowed = stft_frames * np.hanning(window_size) # TODO: sliding view funcion is slow for prod
-    return np.fft.rfft(frames_windowed)                     # results in (num_frames, freq_bins) matrix
+    frames_windowed = stft_frames * np.hanning(window_size)     # TODO: sliding view funcion is slow for prod
+    return np.abs(np.fft.rfft(frames_windowed)) ** 2            # results in (num_frames, freq_bins) matrix
+                                                                # square to get power specgram
 
 
 def calc_chroma(stft_matrix: npt.NDArray, window_size: int, ref_freq: int = 440) -> npt.NDArray:
@@ -21,7 +22,7 @@ def calc_chroma(stft_matrix: npt.NDArray, window_size: int, ref_freq: int = 440)
         midi = round(69 + 12 * np.log2(freqs[i] / ref_freq))    # puts all frequencies to matching bins
         pitch_class = midi % 12
         filterbank[pitch_class, i] = 1.0                # filterbank is (12, freq_bins) and stft_matrix is (num_frames, freq_bins)
-    chroma = filterbank @ np.abs(stft_matrix).T         # get energy levels for each note for each frame
+    chroma = filterbank @ (np.abs(stft_matrix).T ** 2)  # get energy levels for each note for each frame
     chroma /= chroma.max(axis=0, keepdims=True) + 1e-6  # normalize chroma values to 0..1 with max energy levels on each frame
     return chroma
 

@@ -3,6 +3,9 @@ import numpy as np
 import numpy.typing as npt
 from numpy.lib.stride_tricks import sliding_window_view
 
+from soche.fft.stft import calc_chroma, plot_chroma, stft
+from soche.wav.read_wave import read_wave
+
 
 def harmony_median_filter(stft_signal: npt.NDArray, filter_size: int) -> npt.NDArray:
     pad_size = filter_size // 2
@@ -12,13 +15,8 @@ def harmony_median_filter(stft_signal: npt.NDArray, filter_size: int) -> npt.NDA
 
 
 if __name__ == "__main__":
-    demo_signal = np.array([
-        [5, 5, 5],
-        [0, 0, 0],
-        [1, 2, 3],
-        [0, 0, 0],
-        [0, 0, 0],
-        [1, 2, 3],
-    ])
-
-    print(harmony_median_filter(demo_signal, 3))
+    f = read_wave("audio/rec1.wav")
+    f = stft(f, 4096, 512)
+    f_h = harmony_median_filter(f, 97)
+    c_h = calc_chroma(f_h, 4096)
+    plot_chroma(c_h)
