@@ -37,6 +37,7 @@
 - [ ] Score each frame against every template using cosine similarity, and pick the best match.
 - [ ] Add a rule for the no-chord class, based on a threshold on the best score.
 - [ ] Build this frame-wise baseline and check that it works on synthetic data before using real songs.
+- [ ] Refactor code and library for better usability.
 
 ## Phase 7: Viterbi decoding
 - [ ] Implement the Viterbi algorithm in log-space with backpointers and backtracking.

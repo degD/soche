@@ -5,7 +5,6 @@ import numpy.typing as npt
 from numpy.lib.stride_tricks import sliding_window_view
 
 from soche.fft.test_signals import spanish
-from soche.wav.constants import SAMPLE_RATE
 
 
 def stft(signal: npt.NDArray[np.float32], window_size: int, hop_size: int) -> npt.NDArray:
@@ -25,6 +24,10 @@ def calc_chroma(stft_matrix: npt.NDArray, window_size: int, ref_freq: int = 440)
     chroma = filterbank @ stft_matrix.T  # get energy levels for each note for each frame
     chroma /= chroma.max(axis=0, keepdims=True) + 1e-6  # normalize chroma values to 0..1 with max energy levels on each frame
     return chroma
+
+# NOTE: Considering 440 is A, round(69 + 12 * log2(440 / 440)) -> round(69 + 12 * log2(1)) -> round(69) -> 69
+# midi = 69 -> pitch_class = 9
+# 0: C, 1: C#, 2: D ... 9: A, 10: A#, 11: B
 
 
 def plot_chroma(chroma: npt.NDArray) -> None:
