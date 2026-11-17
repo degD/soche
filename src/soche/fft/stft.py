@@ -5,6 +5,7 @@ import numpy.typing as npt
 from numpy.lib.stride_tricks import sliding_window_view
 
 from soche.fft.test_signals import spanish
+from soche.wav.constants import SAMPLE_RATE
 
 
 def stft(signal: npt.NDArray[np.float32], window_size: int, hop_size: int) -> npt.NDArray:
@@ -14,8 +15,9 @@ def stft(signal: npt.NDArray[np.float32], window_size: int, hop_size: int) -> np
                                                                 # square to get power specgram
 
 
+# TODO: Rename stft_matrix
 def calc_chroma(stft_matrix: npt.NDArray, window_size: int, ref_freq: int = 440) -> npt.NDArray:
-    freqs = np.fft.rfftfreq(window_size, 1 / 44_100)   # get frequency values for the range
+    freqs = np.fft.rfftfreq(window_size, 1 / SAMPLE_RATE)   # get frequency values for the range
     filterbank = np.zeros((12, len(freqs)))                 # filtering, there are 12 notes
     for i in range(1, len(freqs)):                              # convert frequency values to midi note numbers, and to pitch classes (notes)
         midi = round(69 + 12 * np.log2(freqs[i] / ref_freq))    # puts all frequencies to matching bins
@@ -47,7 +49,7 @@ def plot_chroma(chroma: npt.NDArray) -> None:
 if __name__ == "__main__":
     window_size = 4096
     hop_size = 512
-    ref_freq = 400
+    ref_freq = 440
     # f = read_wave("audio/guitar_prog_web.wav")
     f = spanish()
     plot_chroma(calc_chroma(stft(f, window_size, hop_size), window_size, ref_freq))

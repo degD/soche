@@ -1,9 +1,10 @@
 
+import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 
 from soche.fft import test_signals
-from soche.fft.stft import calc_chroma, stft
+from soche.fft.stft import calc_chroma, plot_chroma, stft
 from soche.wav.constants import CHORDS_MINIMAL
 
 # a frame is a 1xF vector, F is number of frequency bins
@@ -50,16 +51,36 @@ def get_chords_list() -> list[str]:
     # TODO: RN 24 chords so 24 classes, no empty class
 
 
-def cosine_similarity_chroma(chroma: npt.NDArray) -> list[int]:
+def cosine_similarity_chroma(chroma: npt.NDArray) -> list[tuple[int, float]]:
     chord_classes = []
+    # TODO: Any better way than chroma.T surely exist!
     for frame in chroma.T:
         scores = []
         for chord in get_chords_list():
             s = cosine_similarity_frame_and_chord(frame, chord)
             scores.append(s)
-        i = scores.index(max(scores))
-        chord_classes.append(i)
+        max_s = max(scores)
+        i = scores.index(max_s)
+        chord_classes.append((i, max_s))
     return chord_classes
+
+
+def plot_chord_matching(chord_matching_list: list[tuple[int, float]]) -> None:
+    chord_labels = get_chords_list()
+    grid = np.zeros((len(chord_labels), len(chord_matching_list)))
+    for frame_idx, (chord_idx, score) in enumerate(chord_matching_list):
+        grid[chord_idx, frame_idx] = score
+
+    plt.imshow(
+        grid,
+        aspect="auto",
+    )
+    plt.yticks(ticks=np.arange(len(chord_labels)), labels=chord_labels)
+    plt.xlabel("Frame")
+    plt.ylabel("Chord")
+    plt.grid()
+    plt.show()
+    plt.close()
 
 
 if __name__ == "__main__":
@@ -70,4 +91,6 @@ if __name__ == "__main__":
     f = test_signals.spanish()
     stft_f = stft(f, window_size, hop_size)
     chroma_f = calc_chroma(stft_f, window_size, ref_freq)
-    print(cosine_similarity_chroma(chroma_f))
+    chord_matching_list = cosine_similarity_chroma(chroma_f)
+    # plot_chroma(chroma_f)
+    plot_chord_matching(chord_matching_list)
