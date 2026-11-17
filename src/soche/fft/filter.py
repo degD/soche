@@ -12,11 +12,12 @@ def harmony_median_filter(stft_signal: npt.NDArray, filter_size: int) -> npt.NDA
     padded_stft_signal = np.pad(stft_signal, ((pad_size, pad_size), (0, 0)), mode="edge")
     windows = sliding_window_view(padded_stft_signal, filter_size, axis=0)
     return np.median(windows, axis=2)
+    # TODO: Explain and document
 
 
 if __name__ == "__main__":
     f = read_wave("audio/rec1.wav")
     f = stft(f, 8192, 512)
-    f_h = harmony_median_filter(f, 21)
+    f_h = harmony_median_filter(f, 51)
     c_h = calc_chroma(f_h, 8192)
     plot_chroma(c_h)

@@ -29,8 +29,8 @@
 
 ## Phase 5: Pre-processing
 - [ ] Implement tuning estimation: histogram the fractional semitone deviations of spectral peaks, then shift the filterbank by the estimated offset.
-- [ ] Implement harmonic/percussive separation with median filtering along time and frequency on the spectrogram, then keep the harmonic part.
-- [ ] Compare chroma with and without each step on a few real recordings, and keep notes on the effect.
+- [x] Implement harmonic/percussive separation with median filtering along time and frequency on the spectrogram, then keep the harmonic part.
+- [x] Compare chroma with and without each step on a few real recordings, and keep notes on the effect.
 
 ## Phase 6: Chord templates and frame-wise decoding
 - [ ] Define 24 major and minor triad templates, plus a "no chord" class (25 classes in total).
