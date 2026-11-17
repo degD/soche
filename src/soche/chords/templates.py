@@ -1,8 +1,10 @@
 
 import numpy as np
 import numpy.typing as npt
-from soche.wav.constants import CHORDS_MINIMAL, NOTES_FREQ_MINIMAL
 
+from soche.fft import test_signals
+from soche.fft.stft import calc_chroma, stft
+from soche.wav.constants import CHORDS_MINIMAL
 
 # a frame is a 1xF vector, F is number of frequency bins
 # a chroma_frame is a 1x12 vector, 12 is number of notes
@@ -33,20 +35,39 @@ def chord_to_template(chord: str) -> npt.NDArray:
     # TODO: give higher score to root
 
 
-def cosine_similarity_frame_and_chord(frame: npt.NDArray, chord) -> float:
-    # chord_template = chord_to_template(chord)
-    dot_prod = np.dot(frame, chord)
-    mag_mul = np.sqrt(np.dot(frame, frame)) * np.sqrt(np.dot(chord, chord))
+def cosine_similarity_frame_and_chord(frame: npt.NDArray, chord: str) -> float:
+    chord_template = chord_to_template(chord)
+    dot_prod = np.dot(frame, chord_template)
+    mag_mul = np.sqrt(np.dot(frame, frame)) * np.sqrt(np.dot(chord_template, chord_template))
     score = dot_prod / mag_mul
     return score
     # TODO: could be a better way to calc cosine similarity
+    # TODO: Maybe multiply with matrix to calc faster?
+
+
+def get_chords_list() -> list[str]:
+    return list(CHORDS_MINIMAL)
+    # TODO: RN 24 chords so 24 classes, no empty class
+
+
+def cosine_similarity_chroma(chroma: npt.NDArray) -> list[int]:
+    chord_classes = []
+    for frame in chroma.T:
+        scores = []
+        for chord in get_chords_list():
+            s = cosine_similarity_frame_and_chord(frame, chord)
+            scores.append(s)
+        i = scores.index(max(scores))
+        chord_classes.append(i)
+    return chord_classes
 
 
 if __name__ == "__main__":
-    frame = [1, 4, 1, 0, 5]
-    c1    = [0, 0, 1, 0, 1]
-    c2    = [1, 1, 0, 0, 0]
-    c3    = [0, 1, 0, 0, 1]
-    print(f"c1: {cosine_similarity_frame_and_chord(np.array(frame), np.array(c1))}")
-    print(f"c2: {cosine_similarity_frame_and_chord(np.array(frame), np.array(c2))}")
-    print(f"c3: {cosine_similarity_frame_and_chord(np.array(frame), np.array(c3))}")
+    window_size = 4096
+    hop_size = 512
+    ref_freq = 440
+
+    f = test_signals.spanish()
+    stft_f = stft(f, window_size, hop_size)
+    chroma_f = calc_chroma(stft_f, window_size, ref_freq)
+    print(cosine_similarity_chroma(chroma_f))
