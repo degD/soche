@@ -16,7 +16,7 @@ def harmony_median_filter(stft_signal: npt.NDArray, filter_size: int) -> npt.NDA
 
 if __name__ == "__main__":
     f = read_wave("audio/rec1.wav")
-    f = stft(f, 4096, 512)
-    f_h = harmony_median_filter(f, 97)
-    c_h = calc_chroma(f_h, 4096)
+    f = stft(f, 8192, 512)
+    f_h = harmony_median_filter(f, 21)
+    c_h = calc_chroma(f_h, 8192)
     plot_chroma(c_h)
