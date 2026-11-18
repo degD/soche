@@ -39,7 +39,7 @@
 - [x] Build this frame-wise baseline and check that it works on synthetic data before using real songs.
 
 ## Phase 7: Viterbi decoding
-- [ ] Implement the Viterbi algorithm in log-space with backpointers and backtracking.
+- [x] Implement the Viterbi algorithm with backpointers and backtracking.
 - [ ] Define the transition matrix with a tunable self-transition probability.
 - [ ] Test on synthetic progressions and confirm that smoothing removes single-frame flickers.
 - [ ] Compare frame-wise and Viterbi outputs on the same songs.
