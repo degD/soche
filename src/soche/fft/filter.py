@@ -8,6 +8,8 @@ from soche.wav.read_wave import read_wave
 
 
 def harmony_median_filter(stft_signal: npt.NDArray, filter_size: int) -> npt.NDArray:
+    if filter_size < 1 or filter_size % 2 == 0:
+        raise ValueError("filter_size must be a positive odd integer!")
     pad_size = filter_size // 2
     padded_stft_signal = np.pad(stft_signal, ((pad_size, pad_size), (0, 0)), mode="edge")
     windows = sliding_window_view(padded_stft_signal, filter_size, axis=0)
