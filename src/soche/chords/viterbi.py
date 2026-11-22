@@ -64,10 +64,10 @@ def match_chords_viterbi(scores: npt.NDArray, switch_penalty: float) -> npt.NDAr
     return np.array(path[::-1])
 
 
-def build_chord_matching_list(path: npt.NDArray) -> list[tuple[int, float]]:
+def build_chord_matching_list(scores: npt.NDArray, path: npt.NDArray) -> list[tuple[int, float]]:
     chord_matching_list = []
     for t, chord_idx in enumerate(path):
-        chord_matching_list.append((chord_idx, t))
+        chord_matching_list.append((chord_idx, scores[t, chord_idx]))
     return chord_matching_list
 
 if __name__ == "__main__":
@@ -82,6 +82,6 @@ if __name__ == "__main__":
 
     scores = cosine_similarity_matrix(chroma_f)
     path = match_chords_viterbi(scores, switch_penalty=0.6)
-    chord_matching_list = build_chord_matching_list(path)
+    chord_matching_list = build_chord_matching_list(scores, path)
 
     plot_chord_matching(chord_matching_list)
