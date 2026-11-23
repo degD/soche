@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>soche viewer</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+  .now { display: flex; align-items: baseline; gap: 1rem; margin: 1rem 0; }
+  h1 { font-size: 4rem; margin: 0; min-width: 7rem; }
+  .adj { color: #666; font-size: 1.25rem; }
+  .controls { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+  audio { width: 100%; margin: .5rem 0 1rem; }
+  #timeline { display: flex; flex-wrap: wrap; gap: 4px; max-height: 50vh; overflow-y: auto; }
+  .seg { border: 1px solid #ccc; background: #f8f8f8; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: .85rem; }
+  .seg.active { background: #111; color: #fff; border-color: #111; }
+</style>
+</head>
+<body>
+  <div class="controls">
+    <input id="file" type="file" accept="audio/*">
+    <button onclick="setRate(0.5)">0.5x</button>
+    <button onclick="setRate(0.75)">0.75x</button>
+    <button onclick="setRate(1)">1x</button>
+  </div>
+  <audio id="audio" controls></audio>
+  <div class="now"><h1 id="chord">N</h1><span class="adj" id="next"></span></div>
+  <div id="timeline"></div>
+<script>
+const audio = document.getElementById("audio");
+const chordEl = document.getElementById("chord");
+const nextEl = document.getElementById("next");
+const timeline = document.getElementById("timeline");
+let segs = [], btns = [], active = -1;
+
+function setRate(r) { audio.playbackRate = r; }
+
+function loadSegments(data) {
+  segs = data; active = -1; timeline.innerHTML = "";
+  btns = segs.map(([s, e, c]) => {
+    const b = document.createElement("button");
+    b.className = "seg";
+    b.textContent = `${s.toFixed(1)}s ${c}`;
+    b.onclick = () => { audio.currentTime = s; audio.play(); };
+    timeline.appendChild(b);
+    return b;
+  });
+}
+
+function tick() {
+  const t = audio.currentTime;
+  const idx = segs.findIndex(([s, e]) => t >= s && t < e);
+  if (idx !== active) {
+    if (active >= 0 && btns[active]) btns[active].classList.remove("active");
+    active = idx;
+    if (idx >= 0) {
+      btns[idx].classList.add("active");
+      btns[idx].scrollIntoView({ block: "nearest" });
+      chordEl.textContent = segs[idx][2];
+      nextEl.textContent = segs[idx + 1] ? `→ ${segs[idx + 1][2]}` : "";
+    } else {
+      chordEl.textContent = "N";
+      nextEl.textContent = "";
+    }
+  }
+  requestAnimationFrame(tick);
+}
+
+document.getElementById("file").onchange = async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  audio.src = URL.createObjectURL(f);
+  chordEl.textContent = "...";
+  const res = await fetch("/chords", { method: "POST", body: f });
+  loadSegments(await res.json());
+};
+
+fetch("/chords").then(r => r.json()).then(data => {
+  if (data.length) { audio.src = "/audio"; loadSegments(data); }
+});
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
