@@ -73,6 +73,69 @@ def extract_harmonic_cqt(
     return np.asarray(semitone_cqt, dtype=np.float64)
 
 
+def compute_beat_boundaries(
+    y: npt.NDArray[np.floating],
+    n_frames: int,
+    sr: int = SAMPLE_RATE,
+    hop_length: int = HOP_LENGTH,
+    subdivisions: int = 2,
+) -> npt.NDArray[np.int64]:
+    """Return sorted frame boundaries [0, ..., n_frames] aligned to beats or sub-beats."""
+    _, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=hop_length)
+    beat_frames = [int(b) for b in beats if 0 < int(b) < n_frames]
+
+    if len(beat_frames) < 4:
+        step = max(1, int(round((0.5 / subdivisions) * sr / hop_length)))
+        grid = list(range(step, n_frames, step))
+    elif subdivisions > 1:
+        grid = list(beat_frames)
+        for i in range(len(beat_frames) - 1):
+            start, end = beat_frames[i], beat_frames[i + 1]
+            for k in range(1, subdivisions):
+                grid.append(start + (k * (end - start)) // subdivisions)
+        grid.sort()
+    else:
+        grid = beat_frames
+
+    return np.unique(np.concatenate([[0], grid, [n_frames]])).astype(np.int64)
+
+
+def sync_to_boundaries(
+    spec: npt.NDArray[np.float64],
+    boundaries: npt.NDArray[np.int64],
+) -> npt.NDArray[np.float64]:
+    """Aggregate frame-level features across beat/sub-beat spans via mean (arpeggio-safe)."""
+    n_units = len(boundaries) - 1
+    synced = np.empty((spec.shape[0], n_units), dtype=np.float64)
+    for i in range(n_units):
+        synced[:, i] = spec[:, boundaries[i] : boundaries[i + 1]].mean(axis=1)
+    return synced
+
+
+def separate_repeating_harmony(
+    spec: npt.NDArray[np.float64],
+    subdivisions: int = 2,
+    margin_bg: float = 1.5,
+) -> npt.NDArray[np.float64]:
+    """Suppress non-repeating foreground melody via non-local median filtering."""
+    n_units = spec.shape[1]
+    min_units = 16 * subdivisions
+    if n_units < min_units:
+        return spec
+
+    width = max(2, min(4 * subdivisions, n_units // 4))
+    bg = librosa.decompose.nn_filter(
+        spec,
+        aggregate=np.median,
+        metric="cosine",
+        width=width,
+    )
+    bg = np.minimum(spec, bg)
+    fg = spec - bg
+    mask = librosa.util.softmask(bg, margin_bg * fg, power=2.0)
+    return np.asarray(mask * spec, dtype=np.float64)
+
+
 def fold_to_chroma(semitone_spec: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """Fold a (12 * n_octaves, n_frames) pitch matrix into a (12, n_frames) chromagram."""
     n_octaves = semitone_spec.shape[0] // 12
@@ -105,7 +168,7 @@ def compute_chord_probabilities(
 def decode_chords(
     probs: npt.NDArray[np.float64],
     labels: list[str],
-    self_loop_prob: float = 0.9,
+    self_loop_prob: float = 0.8,
 ) -> list[str]:
     """Decode the most likely chord sequence using librosa's discriminative Viterbi."""
     transition = librosa.sequence.transition_loop(len(labels), self_loop_prob)
@@ -137,7 +200,8 @@ def get_chords_file(
     filename: str | Path,
     sr: int = SAMPLE_RATE,
     hop_length: int = HOP_LENGTH,
-    self_loop_prob: float = 0.9,
+    beat_subdivisions: int = 2,
+    self_loop_prob: float = 0.8,
 ) -> list[tuple[float, float, str]]:
     """Estimate chords from an audio file and return (start_sec, end_sec, chord) segments."""
     y, loaded_sr = librosa.load(filename, sr=sr, mono=True)
@@ -147,14 +211,22 @@ def get_chords_file(
     sr_int = int(loaded_sr)
     duration = float(y.size) / sr_int
     semitone_cqt = extract_harmonic_cqt(y, sr=sr_int, hop_length=hop_length)
-    chroma = fold_to_chroma(semitone_cqt)
+    boundaries = compute_beat_boundaries(
+        y,
+        n_frames=semitone_cqt.shape[1],
+        sr=sr_int,
+        hop_length=hop_length,
+        subdivisions=beat_subdivisions,
+    )
+    synced_cqt = sync_to_boundaries(semitone_cqt, boundaries)
+    harmony_cqt = separate_repeating_harmony(synced_cqt, subdivisions=beat_subdivisions)
+    chroma = fold_to_chroma(harmony_cqt)
 
     labels, templates = build_chord_templates()
     no_chord_index = labels.index("N")
     probs = compute_chord_probabilities(chroma, templates, no_chord_index=no_chord_index)
-    frame_chords = decode_chords(probs, labels, self_loop_prob=self_loop_prob)
+    unit_chords = decode_chords(probs, labels, self_loop_prob=self_loop_prob)
 
-    n_frames = len(frame_chords)
-    frame_starts = librosa.frames_to_time(np.arange(n_frames), sr=sr_int, hop_length=hop_length)
-    boundaries = np.append(frame_starts, duration)
-    return segments_from_chords(frame_chords, boundaries)
+    boundaries_sec = librosa.frames_to_time(boundaries, sr=sr_int, hop_length=hop_length)
+    boundaries_sec[-1] = duration
+    return segments_from_chords(unit_chords, boundaries_sec)
