@@ -25,29 +25,26 @@ _CHORD_QUALITIES: dict[str, dict[int, float]] = {
 }
 
 
-def _build_templates_dict() -> dict[str, npt.NDArray[np.float64]]:
-    templates: dict[str, npt.NDArray[np.float64]] = {}
+def build_chord_templates(bass_weight: float = 0.3) -> tuple[list[str], npt.NDArray[np.float64]]:
+    """Return chord labels (24 triads + 'N') and L2-normalized dual-band triad templates."""
+    labels: list[str] = []
+    rows: list[npt.NDArray[np.float64]] = []
     for suffix, intervals in _CHORD_QUALITIES.items():
         for root_idx, root_name in enumerate(PITCH_CLASSES):
-            vec = np.zeros(12, dtype=np.float64)
+            labels.append(f"{root_name}{suffix}")
+            bass = np.zeros(12, dtype=np.float64)
+            bass[root_idx] = 1.0
+            bass[(root_idx + 7) % 12] = 0.25
+
+            harmony = np.zeros(12, dtype=np.float64)
             for interval, weight in intervals.items():
-                vec[(root_idx + interval) % 12] = weight
-            templates[f"{root_name}{suffix}"] = vec
+                harmony[(root_idx + interval) % 12] = weight
 
-    # No-chord template: uniform energy across all pitch classes.
-    templates["N"] = np.ones(12, dtype=np.float64)
-    return templates
+            vec = np.concatenate([bass_weight * bass, harmony])
+            rows.append(vec / np.linalg.norm(vec))
 
-
-CHORD_TEMPLATES: dict[str, npt.NDArray[np.float64]] = _build_templates_dict()
-
-
-def build_chord_templates() -> tuple[list[str], npt.NDArray[np.float64]]:
-    """Return chord labels and L2-normalized template matrix of shape (n_chords, 12)."""
-    labels = list(CHORD_TEMPLATES.keys())
-    matrix = np.vstack([CHORD_TEMPLATES[label] for label in labels])
-    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-    return labels, matrix / np.maximum(norms, 1e-12)
+    labels.append("N")
+    return labels, np.vstack(rows)
 
 
 def extract_harmonic_cqt(
@@ -170,24 +167,38 @@ def fold_to_chroma(semitone_spec: npt.NDArray[np.float64]) -> npt.NDArray[np.flo
     return semitone_spec[: 12 * n_octaves].reshape(n_octaves, 12, -1).sum(axis=0)
 
 
+def compute_dual_band_features(
+    note_activations: npt.NDArray[np.float64],
+    bass_weight: float = 0.3,
+) -> npt.NDArray[np.float64]:
+    """Build L2-normalized 24-dim [bass_weight * bass_chroma, full_chroma] features."""
+    bass_chroma = fold_to_chroma(note_activations[:24])
+    full_chroma = fold_to_chroma(note_activations)
+
+    bass_norm = bass_chroma / np.maximum(np.linalg.norm(bass_chroma, axis=0, keepdims=True), 1e-12)
+    full_norm = full_chroma / np.maximum(np.linalg.norm(full_chroma, axis=0, keepdims=True), 1e-12)
+    features = np.vstack([bass_weight * bass_norm, full_norm])
+    return features / np.maximum(np.linalg.norm(features, axis=0, keepdims=True), 1e-12)
+
+
 def compute_chord_probabilities(
-    chroma: npt.NDArray[np.floating],
+    features: npt.NDArray[np.floating],
     templates: npt.NDArray[np.float64],
-    no_chord_index: int = -1,
+    rms_db: npt.NDArray[np.floating],
+    silence_db: float = -28.0,
+    no_chord_floor: float = 0.45,
     temperature: float = 0.1,
 ) -> npt.NDArray[np.float64]:
-    """Compute per-frame chord probabilities of shape (n_chords, n_frames)."""
-    norms = np.linalg.norm(chroma, axis=0, keepdims=True)
-    silent_frames = norms[0] < 1e-6
-    chroma_norm = chroma / np.maximum(norms, 1e-12)
+    """Compute per-unit chord probabilities of shape (25, n_units) with calibrated 'N'."""
+    scores = templates @ features
+    silent = rms_db < silence_db
+    if np.any(silent):
+        scores[:, silent] = 0.0
 
-    # Cosine similarity between normalized templates and chroma frames.
-    scores = templates @ chroma_norm
-    if np.any(silent_frames):
-        scores[:, silent_frames] = 0.0
-        scores[no_chord_index, silent_frames] = 1.0
+    no_chord_scores = np.where(silent, 1.0, no_chord_floor)
+    all_scores = np.vstack([scores, no_chord_scores[None, :]])
 
-    scaled = scores / temperature
+    scaled = all_scores / temperature
     scaled -= np.max(scaled, axis=0, keepdims=True)
     exp_scores = np.exp(scaled)
     return exp_scores / np.sum(exp_scores, axis=0, keepdims=True)
@@ -229,6 +240,7 @@ def get_chords_file(
     sr: int = SAMPLE_RATE,
     hop_length: int = HOP_LENGTH,
     beat_subdivisions: int = 2,
+    bass_weight: float = 0.3,
     self_loop_prob: float = 0.85,
 ) -> list[tuple[float, float, str]]:
     """Estimate chords from an audio file and return (start_sec, end_sec, chord) segments."""
@@ -239,6 +251,8 @@ def get_chords_file(
     sr_int = int(loaded_sr)
     duration = float(y.size) / sr_int
     semitone_cqt = extract_harmonic_cqt(y, sr=sr_int, hop_length=hop_length)
+    rms_frames = librosa.feature.rms(y=y, hop_length=hop_length)
+
     boundaries = compute_beat_boundaries(
         y,
         n_frames=semitone_cqt.shape[1],
@@ -247,13 +261,15 @@ def get_chords_file(
         subdivisions=beat_subdivisions,
     )
     synced_cqt = sync_to_boundaries(semitone_cqt, boundaries)
+    synced_rms = sync_to_boundaries(rms_frames, boundaries)[0]
+    rms_db = librosa.amplitude_to_db(synced_rms, ref=float(np.max(synced_rms)) + 1e-12)
+
     harmony_cqt = separate_repeating_harmony(synced_cqt, subdivisions=beat_subdivisions)
     deconv_cqt = deconvolve_overtones(harmony_cqt)
-    chroma = fold_to_chroma(deconv_cqt)
+    features = compute_dual_band_features(deconv_cqt, bass_weight=bass_weight)
 
-    labels, templates = build_chord_templates()
-    no_chord_index = labels.index("N")
-    probs = compute_chord_probabilities(chroma, templates, no_chord_index=no_chord_index)
+    labels, templates = build_chord_templates(bass_weight=bass_weight)
+    probs = compute_chord_probabilities(features, templates, rms_db)
     unit_chords = decode_chords(probs, labels, self_loop_prob=self_loop_prob)
 
     boundaries_sec = librosa.frames_to_time(boundaries, sr=sr_int, hop_length=hop_length)
