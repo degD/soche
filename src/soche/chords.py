@@ -18,10 +18,11 @@ CQT_FMIN = float(librosa.note_to_hz("C1") * (2.0 ** (-1.0 / CQT_BINS_PER_OCTAVE)
 
 PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
-# Relative weights for chord tones: root, 3rd, and 5th.
+# Relative weights for chord tones: root, 3rd, 5th, and (optional) b7th.
 _CHORD_QUALITIES: dict[str, dict[int, float]] = {
-    "": {0: 1.20, 4: 0.75, 7: 0.85},   # Major triad
-    "m": {0: 1.20, 3: 0.75, 7: 0.85},  # Minor triad
+    "": {0: 1.20, 4: 0.75, 7: 0.85},             # Major triad
+    "m": {0: 1.20, 3: 0.75, 7: 0.85},            # Minor triad
+    "7": {0: 1.20, 4: 0.80, 7: 0.45, 10: 0.80},  # Dominant 7th
 }
 
 
@@ -136,7 +137,7 @@ def separate_repeating_harmony(
 
 def build_nnls_dictionary(
     n_semitones: int = CQT_N_SEMITONES,
-    harmonic_decay: float = 0.7,
+    harmonic_decay: float = 0.4,
     n_harmonics: int = 6,
 ) -> npt.NDArray[np.float64]:
     """Build harmonic-series dictionary to deconvolve note overtones from fundamentals."""
@@ -151,7 +152,7 @@ def build_nnls_dictionary(
 
 def deconvolve_overtones(
     spec: npt.NDArray[np.float64],
-    harmonic_decay: float = 0.7,
+    harmonic_decay: float = 0.4,
 ) -> npt.NDArray[np.float64]:
     """Solve non-negative least squares per frame to suppress phantom overtone triads."""
     dictionary = build_nnls_dictionary(spec.shape[0], harmonic_decay=harmonic_decay)
