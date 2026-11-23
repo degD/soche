@@ -3,6 +3,7 @@ from pathlib import Path
 import librosa
 import numpy as np
 import numpy.typing as npt
+from scipy.ndimage import median_filter
 from scipy.optimize import nnls
 
 SAMPLE_RATE = 16_000
@@ -19,20 +20,21 @@ CQT_FMIN = float(librosa.note_to_hz("C1") * (2.0 ** (-1.0 / CQT_BINS_PER_OCTAVE)
 PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 # Relative weights for chord tones: root, 3rd, 5th, and (optional) b7th.
-_CHORD_QUALITIES: dict[str, dict[int, float]] = {
-    "": {0: 1.20, 4: 0.75, 7: 0.85},             # Major triad
-    "m": {0: 1.20, 3: 0.75, 7: 0.85},            # Minor triad
-    "7": {0: 1.20, 4: 0.80, 7: 0.45, 10: 0.80},  # Dominant 7th
+_CHORD_QUALITIES: dict[str, tuple[str, dict[int, float]]] = {
+    "": ("", {0: 1.20, 4: 0.75, 7: 0.85}),               # Major triad
+    "m": ("m", {0: 1.20, 3: 0.75, 7: 0.85}),             # Minor triad
+    "m7": ("m", {0: 1.20, 3: 0.75, 7: 0.75, 10: 0.65}),  # Minor 7th (mapped to minor)
+    "7": ("7", {0: 1.20, 4: 0.80, 7: 0.45, 10: 0.80}),   # Dominant 7th
 }
 
 
-def build_chord_templates(bass_weight: float = 0.3) -> tuple[list[str], npt.NDArray[np.float64]]:
-    """Return chord labels (24 triads + 'N') and L2-normalized dual-band triad templates."""
+def build_chord_templates(bass_weight: float = 0.0) -> tuple[list[str], npt.NDArray[np.float64]]:
+    """Return chord labels and L2-normalized dual-band triad/7th templates."""
     labels: list[str] = []
     rows: list[npt.NDArray[np.float64]] = []
-    for suffix, intervals in _CHORD_QUALITIES.items():
+    for label_suffix, intervals in _CHORD_QUALITIES.values():
         for root_idx, root_name in enumerate(PITCH_CLASSES):
-            labels.append(f"{root_name}{suffix}")
+            labels.append(f"{root_name}{label_suffix}")
             bass = np.zeros(12, dtype=np.float64)
             bass[root_idx] = 1.0
             bass[(root_idx + 7) % 12] = 0.25
@@ -109,6 +111,17 @@ def sync_to_boundaries(
     for i in range(n_units):
         synced[:, i] = spec[:, boundaries[i] : boundaries[i + 1]].mean(axis=1)
     return synced
+
+
+def whiten_spectrum(
+    spec: npt.NDArray[np.float64],
+    gamma: float = 3.0,
+    median_bins: int = 13,
+) -> npt.NDArray[np.float64]:
+    """Apply log compression and local frequency-axis median subtraction."""
+    compressed = np.log1p(gamma * spec)
+    floor = median_filter(compressed, size=(median_bins, 1), mode="nearest")
+    return np.maximum(0.0, compressed - floor)
 
 
 def separate_repeating_harmony(
@@ -241,7 +254,7 @@ def get_chords_file(
     sr: int = SAMPLE_RATE,
     hop_length: int = HOP_LENGTH,
     beat_subdivisions: int = 2,
-    bass_weight: float = 0.3,
+    bass_weight: float = 0.0,
     self_loop_prob: float = 0.85,
 ) -> list[tuple[float, float, str]]:
     """Estimate chords from an audio file and return (start_sec, end_sec, chord) segments."""
@@ -265,7 +278,8 @@ def get_chords_file(
     synced_rms = sync_to_boundaries(rms_frames, boundaries)[0]
     rms_db = librosa.amplitude_to_db(synced_rms, ref=float(np.max(synced_rms)) + 1e-12)
 
-    harmony_cqt = separate_repeating_harmony(synced_cqt, subdivisions=beat_subdivisions)
+    whitened_cqt = whiten_spectrum(synced_cqt)
+    harmony_cqt = separate_repeating_harmony(whitened_cqt, subdivisions=beat_subdivisions)
     deconv_cqt = deconvolve_overtones(harmony_cqt)
     features = compute_dual_band_features(deconv_cqt, bass_weight=bass_weight)
 
