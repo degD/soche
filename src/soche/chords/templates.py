@@ -1,40 +1,35 @@
-# Weights:
-# - Root (0): 1.2
-# - 5th (7): 0.85 (strongest after root)
-# - Major/Minor 3rd (4 or 3): 0.75
-#
-# NOTE: Those values are chosen without empirical evidence. Tuning required!
+import numpy as np
+import numpy.typing as npt
 
-CHORD_TEMPLATES = {
-    # Major chords (0, 4, 7)
-    "C":   [1.20, 0.00, 0.00, 0.00, 0.75, 0.00, 0.00, 0.85, 0.00, 0.00, 0.00, 0.00],
-    "C#":  [0.00, 1.20, 0.00, 0.00, 0.00, 0.75, 0.00, 0.00, 0.85, 0.00, 0.00, 0.00],
-    "D":   [0.00, 0.00, 1.20, 0.00, 0.00, 0.00, 0.75, 0.00, 0.00, 0.85, 0.00, 0.00],
-    "D#":  [0.00, 0.00, 0.00, 1.20, 0.00, 0.00, 0.00, 0.75, 0.00, 0.00, 0.85, 0.00],
-    "E":   [0.00, 0.00, 0.00, 0.00, 1.20, 0.00, 0.00, 0.00, 0.75, 0.00, 0.00, 0.85],
-    "F":   [0.85, 0.00, 0.00, 0.00, 0.00, 1.20, 0.00, 0.00, 0.00, 0.75, 0.00, 0.00],
-    "F#":  [0.00, 0.85, 0.00, 0.00, 0.00, 0.00, 1.20, 0.00, 0.00, 0.00, 0.75, 0.00],
-    "G":   [0.00, 0.00, 0.85, 0.00, 0.00, 0.00, 0.00, 1.20, 0.00, 0.00, 0.00, 0.75],
-    "G#":  [0.75, 0.00, 0.00, 0.85, 0.00, 0.00, 0.00, 0.00, 1.20, 0.00, 0.00, 0.00],
-    "A":   [0.00, 0.75, 0.00, 0.00, 0.85, 0.00, 0.00, 0.00, 0.00, 1.20, 0.00, 0.00],
-    "A#":  [0.00, 0.00, 0.75, 0.00, 0.00, 0.85, 0.00, 0.00, 0.00, 0.00, 1.20, 0.00],
-    "B":   [0.00, 0.00, 0.00, 0.75, 0.00, 0.00, 0.85, 0.00, 0.00, 0.00, 0.00, 1.20],
+PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
-    # Minor chords (0, 3, 7)
-    "Cm":  [1.20, 0.00, 0.00, 0.75, 0.00, 0.00, 0.00, 0.85, 0.00, 0.00, 0.00, 0.00],
-    "C#m": [0.00, 1.20, 0.00, 0.00, 0.75, 0.00, 0.00, 0.00, 0.85, 0.00, 0.00, 0.00],
-    "Dm":  [0.00, 0.00, 1.20, 0.00, 0.00, 0.75, 0.00, 0.00, 0.00, 0.85, 0.00, 0.00],
-    "D#m": [0.00, 0.00, 0.00, 1.20, 0.00, 0.00, 0.75, 0.00, 0.00, 0.00, 0.85, 0.00],
-    "Em":  [0.00, 0.00, 0.00, 0.00, 1.20, 0.00, 0.00, 0.75, 0.00, 0.00, 0.00, 0.85],
-    "Fm":  [0.85, 0.00, 0.00, 0.00, 0.00, 1.20, 0.00, 0.00, 0.75, 0.00, 0.00, 0.00],
-    "F#m": [0.00, 0.85, 0.00, 0.00, 0.00, 0.00, 1.20, 0.00, 0.00, 0.75, 0.00, 0.00],
-    "Gm":  [0.00, 0.00, 0.85, 0.00, 0.00, 0.00, 0.00, 1.20, 0.00, 0.00, 0.75, 0.00],
-    "G#m": [0.00, 0.00, 0.00, 0.85, 0.00, 0.00, 0.00, 0.00, 1.20, 0.00, 0.00, 0.75],
-    "Am":  [0.75, 0.00, 0.00, 0.00, 0.85, 0.00, 0.00, 0.00, 0.00, 1.20, 0.00, 0.00],
-    "A#m": [0.00, 0.75, 0.00, 0.00, 0.00, 0.85, 0.00, 0.00, 0.00, 0.00, 1.20, 0.00],
-    "Bm":  [0.00, 0.00, 0.75, 0.00, 0.00, 0.00, 0.85, 0.00, 0.00, 0.00, 0.00, 1.20],
-
-    # No chord (uniform energy)
-    # Noise, equally similar to all chords, or percussion, vertical line on spectogram
-    "N":   [1.20, 1.20, 1.20, 1.20, 1.20, 1.20, 1.20, 1.20, 1.20, 1.20, 1.20, 1.20],
+# Relative weights for chord tones: root, 3rd, and 5th.
+_CHORD_QUALITIES: dict[str, dict[int, float]] = {
+    "": {0: 1.20, 4: 0.75, 7: 0.85},   # Major triad
+    "m": {0: 1.20, 3: 0.75, 7: 0.85},  # Minor triad
 }
+
+
+def _build_templates_dict() -> dict[str, npt.NDArray[np.float64]]:
+    templates: dict[str, npt.NDArray[np.float64]] = {}
+    for suffix, intervals in _CHORD_QUALITIES.items():
+        for root_idx, root_name in enumerate(PITCH_CLASSES):
+            vec = np.zeros(12, dtype=np.float64)
+            for interval, weight in intervals.items():
+                vec[(root_idx + interval) % 12] = weight
+            templates[f"{root_name}{suffix}"] = vec
+
+    # No-chord template: uniform energy across all pitch classes.
+    templates["N"] = np.ones(12, dtype=np.float64)
+    return templates
+
+
+CHORD_TEMPLATES: dict[str, npt.NDArray[np.float64]] = _build_templates_dict()
+
+
+def build_chord_templates() -> tuple[list[str], npt.NDArray[np.float64]]:
+    """Return chord labels and L2-normalized template matrix of shape (n_chords, 12)."""
+    labels = list(CHORD_TEMPLATES.keys())
+    matrix = np.vstack([CHORD_TEMPLATES[label] for label in labels])
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    return labels, matrix / np.maximum(norms, 1e-12)
