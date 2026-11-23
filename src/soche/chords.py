@@ -195,16 +195,75 @@ def compute_dual_band_features(
     return features / np.maximum(np.linalg.norm(features, axis=0, keepdims=True), 1e-12)
 
 
+# Krumhansl-Schmuckler key profiles (C major / C minor).
+_MAJOR_KEY_PROFILE = np.array(
+    [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88], dtype=np.float64
+)
+_MINOR_KEY_PROFILE = np.array(
+    [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17], dtype=np.float64
+)
+
+
+def estimate_key_prior(
+    note_activations: npt.NDArray[np.float64],
+    labels: list[str],
+    key_bonus: float = 0.06,
+) -> npt.NDArray[np.float64]:
+    """Return a soft per-chord score bonus for chords diatonic to the estimated global key."""
+    global_chroma = fold_to_chroma(note_activations).mean(axis=1)
+    gc_centered = global_chroma - global_chroma.mean()
+    norm = np.linalg.norm(gc_centered)
+    if norm < 1e-12:
+        return np.zeros(len(labels) - 1, dtype=np.float64)
+    gc_centered /= norm
+
+    best_corr = -np.inf
+    best_mode = "major"
+    best_root = 0
+    for mode, profile in (("major", _MAJOR_KEY_PROFILE), ("minor", _MINOR_KEY_PROFILE)):
+        prof_centered = profile - profile.mean()
+        prof_norm = prof_centered / np.linalg.norm(prof_centered)
+        for root in range(12):
+            corr = float(np.dot(gc_centered, np.roll(prof_norm, root)))
+            if corr > best_corr:
+                best_corr = corr
+                best_mode = mode
+                best_root = root
+
+    if best_mode == "major":
+        in_key = {
+            f"{PITCH_CLASSES[(best_root + iv) % 12]}" for iv in (0, 5, 7)
+        } | {
+            f"{PITCH_CLASSES[(best_root + iv) % 12]}m" for iv in (2, 4, 9)
+        } | {
+            f"{PITCH_CLASSES[(best_root + 7) % 12]}7"
+        }
+    else:
+        # Include harmonic-minor V and V7 alongside natural-minor diatonic chords.
+        in_key = {
+            f"{PITCH_CLASSES[(best_root + iv) % 12]}m" for iv in (0, 5, 7)
+        } | {
+            f"{PITCH_CLASSES[(best_root + iv) % 12]}" for iv in (3, 7, 8, 10)
+        } | {
+            f"{PITCH_CLASSES[(best_root + 7) % 12]}7"
+        }
+
+    return np.array([key_bonus if lbl in in_key else 0.0 for lbl in labels[:-1]], dtype=np.float64)
+
+
 def compute_chord_probabilities(
     features: npt.NDArray[np.floating],
     templates: npt.NDArray[np.float64],
     rms_db: npt.NDArray[np.floating],
+    key_prior: npt.NDArray[np.float64] | None = None,
     silence_db: float = -28.0,
     no_chord_floor: float = 0.45,
     temperature: float = 0.1,
 ) -> npt.NDArray[np.float64]:
-    """Compute per-unit chord probabilities of shape (25, n_units) with calibrated 'N'."""
+    """Compute per-unit chord probabilities of shape (n_chords, n_units) with calibrated 'N'."""
     scores = templates @ features
+    if key_prior is not None:
+        scores = scores + key_prior[:, None]
     silent = rms_db < silence_db
     if np.any(silent):
         scores[:, silent] = 0.0
@@ -284,7 +343,8 @@ def get_chords_file(
     features = compute_dual_band_features(deconv_cqt, bass_weight=bass_weight)
 
     labels, templates = build_chord_templates(bass_weight=bass_weight)
-    probs = compute_chord_probabilities(features, templates, rms_db)
+    key_prior = estimate_key_prior(deconv_cqt, labels)
+    probs = compute_chord_probabilities(features, templates, rms_db, key_prior=key_prior)
     unit_chords = decode_chords(probs, labels, self_loop_prob=self_loop_prob)
 
     boundaries_sec = librosa.frames_to_time(boundaries, sr=sr_int, hop_length=hop_length)
