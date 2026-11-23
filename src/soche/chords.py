@@ -3,6 +3,7 @@ from pathlib import Path
 import librosa
 import numpy as np
 import numpy.typing as npt
+from scipy.optimize import nnls
 
 SAMPLE_RATE = 16_000
 HOP_LENGTH = 512
@@ -136,6 +137,33 @@ def separate_repeating_harmony(
     return np.asarray(mask * spec, dtype=np.float64)
 
 
+def build_nnls_dictionary(
+    n_semitones: int = CQT_N_SEMITONES,
+    harmonic_decay: float = 0.7,
+    n_harmonics: int = 6,
+) -> npt.NDArray[np.float64]:
+    """Build harmonic-series dictionary to deconvolve note overtones from fundamentals."""
+    dictionary = np.zeros((n_semitones, n_semitones), dtype=np.float64)
+    offsets = [round(12 * np.log2(k)) for k in range(1, n_harmonics + 1)]
+    for note in range(n_semitones):
+        for h_idx, offset in enumerate(offsets):
+            if note + offset < n_semitones:
+                dictionary[note + offset, note] += harmonic_decay**h_idx
+    return dictionary
+
+
+def deconvolve_overtones(
+    spec: npt.NDArray[np.float64],
+    harmonic_decay: float = 0.7,
+) -> npt.NDArray[np.float64]:
+    """Solve non-negative least squares per frame to suppress phantom overtone triads."""
+    dictionary = build_nnls_dictionary(spec.shape[0], harmonic_decay=harmonic_decay)
+    activations = np.empty_like(spec)
+    for t in range(spec.shape[1]):
+        activations[:, t], _ = nnls(dictionary, spec[:, t])
+    return activations
+
+
 def fold_to_chroma(semitone_spec: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """Fold a (12 * n_octaves, n_frames) pitch matrix into a (12, n_frames) chromagram."""
     n_octaves = semitone_spec.shape[0] // 12
@@ -168,7 +196,7 @@ def compute_chord_probabilities(
 def decode_chords(
     probs: npt.NDArray[np.float64],
     labels: list[str],
-    self_loop_prob: float = 0.8,
+    self_loop_prob: float = 0.85,
 ) -> list[str]:
     """Decode the most likely chord sequence using librosa's discriminative Viterbi."""
     transition = librosa.sequence.transition_loop(len(labels), self_loop_prob)
@@ -201,7 +229,7 @@ def get_chords_file(
     sr: int = SAMPLE_RATE,
     hop_length: int = HOP_LENGTH,
     beat_subdivisions: int = 2,
-    self_loop_prob: float = 0.8,
+    self_loop_prob: float = 0.85,
 ) -> list[tuple[float, float, str]]:
     """Estimate chords from an audio file and return (start_sec, end_sec, chord) segments."""
     y, loaded_sr = librosa.load(filename, sr=sr, mono=True)
@@ -220,7 +248,8 @@ def get_chords_file(
     )
     synced_cqt = sync_to_boundaries(semitone_cqt, boundaries)
     harmony_cqt = separate_repeating_harmony(synced_cqt, subdivisions=beat_subdivisions)
-    chroma = fold_to_chroma(harmony_cqt)
+    deconv_cqt = deconvolve_overtones(harmony_cqt)
+    chroma = fold_to_chroma(deconv_cqt)
 
     labels, templates = build_chord_templates()
     no_chord_index = labels.index("N")
