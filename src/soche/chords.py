@@ -117,9 +117,23 @@ def whiten_spectrum(
     spec: npt.NDArray[np.float64],
     gamma: float = 3.0,
     median_bins: int = 13,
+    active_mask: npt.NDArray[np.bool_] | None = None,
+    floor_percentile: float = 5.0,
 ) -> npt.NDArray[np.float64]:
-    """Apply log compression and local frequency-axis median subtraction."""
-    compressed = np.log1p(gamma * spec)
+    """Apply RMS normalization, stationary floor subtraction, log compression, and median whitening."""
+    rms = float(np.sqrt(np.mean(spec**2)))
+    normalized = spec / (rms + 1e-12)
+    if floor_percentile > 0.0:
+        ref = (
+            normalized[:, active_mask]
+            if active_mask is not None and int(np.sum(active_mask)) >= 4
+            else normalized
+        )
+        if ref.shape[1] >= 4:
+            stat_floor = np.percentile(ref, floor_percentile, axis=1, keepdims=True)
+            normalized = np.maximum(0.0, normalized - stat_floor)
+
+    compressed = np.log1p(gamma * normalized)
     floor = median_filter(compressed, size=(median_bins, 1), mode="nearest")
     return np.maximum(0.0, compressed - floor)
 
@@ -313,7 +327,7 @@ def get_chords_file(
     synced_rms = sync_to_boundaries(rms_frames, boundaries)[0]
     rms_db = librosa.amplitude_to_db(synced_rms, ref=float(np.max(synced_rms)) + 1e-12)
 
-    whitened_cqt = whiten_spectrum(synced_cqt)
+    whitened_cqt = whiten_spectrum(synced_cqt, active_mask=rms_db >= -28.0)
     deconv_cqt = deconvolve_overtones(whitened_cqt)
     features = compute_dual_band_features(deconv_cqt, bass_weight=bass_weight)
 
