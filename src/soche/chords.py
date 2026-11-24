@@ -124,30 +124,6 @@ def whiten_spectrum(
     return np.maximum(0.0, compressed - floor)
 
 
-def separate_repeating_harmony(
-    spec: npt.NDArray[np.float64],
-    subdivisions: int = 2,
-    margin_bg: float = 1.5,
-) -> npt.NDArray[np.float64]:
-    """Suppress non-repeating foreground melody via non-local median filtering."""
-    n_units = spec.shape[1]
-    min_units = 16 * subdivisions
-    if n_units < min_units:
-        return spec
-
-    width = max(2, min(4 * subdivisions, n_units // 4))
-    bg = librosa.decompose.nn_filter(
-        spec,
-        aggregate=np.median,
-        metric="cosine",
-        width=width,
-    )
-    bg = np.minimum(spec, bg)
-    fg = spec - bg
-    mask = librosa.util.softmask(bg, margin_bg * fg, power=2.0)
-    return np.asarray(mask * spec, dtype=np.float64)
-
-
 def build_nnls_dictionary(
     n_semitones: int = CQT_N_SEMITONES,
     harmonic_decay: float = 0.4,
@@ -338,8 +314,7 @@ def get_chords_file(
     rms_db = librosa.amplitude_to_db(synced_rms, ref=float(np.max(synced_rms)) + 1e-12)
 
     whitened_cqt = whiten_spectrum(synced_cqt)
-    harmony_cqt = separate_repeating_harmony(whitened_cqt, subdivisions=beat_subdivisions)
-    deconv_cqt = deconvolve_overtones(harmony_cqt)
+    deconv_cqt = deconvolve_overtones(whitened_cqt)
     features = compute_dual_band_features(deconv_cqt, bass_weight=bass_weight)
 
     labels, templates = build_chord_templates(bass_weight=bass_weight)
