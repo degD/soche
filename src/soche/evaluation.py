@@ -60,6 +60,8 @@ def _download_file(url: str, dest: Path) -> None:
                 else:
                     print(f"  {downloaded / (1024 * 1024):.1f} MB")
                 next_report += 25 * 1024 * 1024
+        if total_bytes is not None and downloaded != total_bytes:
+            raise IOError(f"Incomplete download for {url}: got {downloaded} of {total_bytes} bytes")
 
 
 def _download_and_extract(url: str, target_dir: Path, archive_name: str, tmp_parent: Path) -> None:
@@ -107,7 +109,7 @@ def _download_vocalset(sources_dir: Path) -> Path:
     zip_files = [f for f in record.get("files", []) if str(f.get("key", "")).lower().endswith(".zip")]
     if not zip_files:
         raise RuntimeError(f"No .zip archive found in VocalSet Zenodo record {VOCALSET_API_URL}")
-    entry = max(zip_files, key=lambda f: int(f.get("size", 0)))
+    entry = min(zip_files, key=lambda f: int(f.get("size", 0)))
     links = entry.get("links", {})
     url = links.get("self") or links.get("download")
     if not url:
