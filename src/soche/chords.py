@@ -4,7 +4,6 @@ import librosa
 import numpy as np
 import numpy.typing as npt
 from scipy.ndimage import median_filter
-from scipy.optimize import nnls
 
 SAMPLE_RATE = 16_000
 HOP_LENGTH = 512
@@ -18,31 +17,49 @@ CQT_N_BINS = CQT_N_SEMITONES * CQT_BINS_PER_SEMITONE
 CQT_FMIN = float(librosa.note_to_hz("C1") * (2.0 ** (-1.0 / CQT_BINS_PER_OCTAVE)))
 
 PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+HARMONY_OCTAVE_WEIGHTS: tuple[float, ...] = (0.2, 0.4, 1.0, 1.0, 1.0)
 
 # Relative weights for chord tones: root, 3rd, 5th, and (optional) b7th.
 _CHORD_QUALITIES: dict[str, tuple[str, dict[int, float]]] = {
-    "": ("", {0: 1.20, 4: 0.75, 7: 0.85}),               # Major triad
-    "m": ("m", {0: 1.20, 3: 0.75, 7: 0.85}),             # Minor triad
-    "m7": ("m", {0: 1.20, 3: 0.75, 7: 0.75, 10: 0.65}),  # Minor 7th (mapped to minor)
-    "7": ("7", {0: 1.20, 4: 0.80, 7: 0.45, 10: 0.80}),   # Dominant 7th
+    "": ("", {0: 1.0, 4: 1.0, 7: 1.0}),               # Major triad
+    "m": ("m", {0: 1.0, 3: 1.0, 7: 1.0}),             # Minor triad
+    "7": ("7", {0: 1.0, 4: 1.0, 7: 0.7, 10: 0.9}),    # Dominant 7th
 }
 
 
-def build_chord_templates(bass_weight: float = 0.0) -> tuple[list[str], npt.NDArray[np.float64]]:
-    """Return chord labels and L2-normalized dual-band triad/7th templates."""
+def _harmonic_chroma_profile(
+    intervals: dict[int, float],
+    n_harmonics: int = 4,
+    harmonic_decay: float = 0.45,
+) -> npt.NDArray[np.float64]:
+    """Project chord-tone intervals across their first n_harmonics overtones."""
+    profile = np.zeros(12, dtype=np.float64)
+    offsets = [round(12 * np.log2(k)) % 12 for k in range(1, n_harmonics + 1)]
+    for interval, weight in intervals.items():
+        for h_idx, offset in enumerate(offsets):
+            profile[(interval + offset) % 12] += weight * (harmonic_decay**h_idx)
+    return profile
+
+
+def build_chord_templates(
+    bass_weight: float = 0.15,
+    n_harmonics: int = 4,
+    harmonic_decay: float = 0.45,
+) -> tuple[list[str], npt.NDArray[np.float64]]:
+    """Return chord labels and L2-normalized dual-band harmonic-overtone templates."""
     labels: list[str] = []
     rows: list[npt.NDArray[np.float64]] = []
     for label_suffix, intervals in _CHORD_QUALITIES.values():
+        base_profile = _harmonic_chroma_profile(
+            intervals, n_harmonics=n_harmonics, harmonic_decay=harmonic_decay
+        )
         for root_idx, root_name in enumerate(PITCH_CLASSES):
             labels.append(f"{root_name}{label_suffix}")
             bass = np.zeros(12, dtype=np.float64)
             bass[root_idx] = 1.0
             bass[(root_idx + 7) % 12] = 0.25
 
-            harmony = np.zeros(12, dtype=np.float64)
-            for interval, weight in intervals.items():
-                harmony[(root_idx + interval) % 12] = weight
-
+            harmony = np.roll(base_profile, root_idx)
             vec = np.concatenate([bass_weight * bass, harmony])
             rows.append(vec / np.linalg.norm(vec))
 
@@ -138,31 +155,16 @@ def whiten_spectrum(
     return np.maximum(0.0, compressed - floor)
 
 
-def build_nnls_dictionary(
-    n_semitones: int = CQT_N_SEMITONES,
-    harmonic_decay: float = 0.4,
-    n_harmonics: int = 6,
-) -> npt.NDArray[np.float64]:
-    """Build harmonic-series dictionary to deconvolve note overtones from fundamentals."""
-    dictionary = np.zeros((n_semitones, n_semitones), dtype=np.float64)
-    offsets = [round(12 * np.log2(k)) for k in range(1, n_harmonics + 1)]
-    for note in range(n_semitones):
-        for h_idx, offset in enumerate(offsets):
-            if note + offset < n_semitones:
-                dictionary[note + offset, note] += harmonic_decay**h_idx
-    return dictionary
-
-
-def deconvolve_overtones(
+def weight_octaves(
     spec: npt.NDArray[np.float64],
-    harmonic_decay: float = 0.4,
+    octave_weights: tuple[float, ...] = HARMONY_OCTAVE_WEIGHTS,
 ) -> npt.NDArray[np.float64]:
-    """Solve non-negative least squares per frame to suppress phantom overtone triads."""
-    dictionary = build_nnls_dictionary(spec.shape[0], harmonic_decay=harmonic_decay)
-    activations = np.empty_like(spec)
-    for t in range(spec.shape[1]):
-        activations[:, t], _ = nnls(dictionary, spec[:, t])
-    return activations
+    """Scale each 12-semitone octave band so low-register resonance does not mask chords."""
+    n_octaves = spec.shape[0] // 12
+    weights = np.repeat(np.asarray(octave_weights[:n_octaves], dtype=np.float64), 12)[:, None]
+    out = spec.copy()
+    out[: 12 * n_octaves] *= weights
+    return out
 
 
 def fold_to_chroma(semitone_spec: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
@@ -172,12 +174,14 @@ def fold_to_chroma(semitone_spec: npt.NDArray[np.float64]) -> npt.NDArray[np.flo
 
 
 def compute_dual_band_features(
-    note_activations: npt.NDArray[np.float64],
-    bass_weight: float = 0.3,
+    spec: npt.NDArray[np.float64],
+    bass_weight: float = 0.15,
+    octave_weights: tuple[float, ...] = HARMONY_OCTAVE_WEIGHTS,
+    chroma_power: float = 0.7,
 ) -> npt.NDArray[np.float64]:
-    """Build L2-normalized 24-dim [bass_weight * bass_chroma, full_chroma] features."""
-    bass_chroma = fold_to_chroma(note_activations[:24])
-    full_chroma = fold_to_chroma(note_activations)
+    """Build L2-normalized 24-dim [bass_weight * bass_chroma, harmony_chroma] features."""
+    bass_chroma = fold_to_chroma(spec[:24]) ** chroma_power
+    full_chroma = fold_to_chroma(weight_octaves(spec, octave_weights)) ** chroma_power
 
     bass_norm = bass_chroma / np.maximum(np.linalg.norm(bass_chroma, axis=0, keepdims=True), 1e-12)
     full_norm = full_chroma / np.maximum(np.linalg.norm(full_chroma, axis=0, keepdims=True), 1e-12)
@@ -248,7 +252,7 @@ def compute_chord_probabilities(
     key_prior: npt.NDArray[np.float64] | None = None,
     silence_db: float = -28.0,
     no_chord_floor: float = 0.45,
-    temperature: float = 0.1,
+    temperature: float = 0.06,
 ) -> npt.NDArray[np.float64]:
     """Compute per-unit chord probabilities of shape (n_chords, n_units) with calibrated 'N'."""
     scores = templates @ features
@@ -303,7 +307,7 @@ def get_chords_file(
     sr: int = SAMPLE_RATE,
     hop_length: int = HOP_LENGTH,
     beat_subdivisions: int = 2,
-    bass_weight: float = 0.0,
+    bass_weight: float = 0.15,
     self_loop_prob: float = 0.85,
 ) -> list[tuple[float, float, str]]:
     """Estimate chords from an audio file and return (start_sec, end_sec, chord) segments."""
@@ -328,11 +332,11 @@ def get_chords_file(
     rms_db = librosa.amplitude_to_db(synced_rms, ref=float(np.max(synced_rms)) + 1e-12)
 
     whitened_cqt = whiten_spectrum(synced_cqt, active_mask=rms_db >= -28.0)
-    deconv_cqt = deconvolve_overtones(whitened_cqt)
-    features = compute_dual_band_features(deconv_cqt, bass_weight=bass_weight)
+    harmony_spec = weight_octaves(whitened_cqt)
+    features = compute_dual_band_features(whitened_cqt, bass_weight=bass_weight)
 
     labels, templates = build_chord_templates(bass_weight=bass_weight)
-    key_prior = estimate_key_prior(deconv_cqt, labels)
+    key_prior = estimate_key_prior(harmony_spec, labels)
     probs = compute_chord_probabilities(features, templates, rms_db, key_prior=key_prior)
     unit_chords = decode_chords(probs, labels, self_loop_prob=self_loop_prob)
 
