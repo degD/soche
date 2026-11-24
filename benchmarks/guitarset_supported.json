@@ -1,0 +1,47 @@
+{
+  "dataset": "guitarset",
+  "chord_source": "performed",
+  "split": "all",
+  "supported_only": true,
+  "subsets": {
+    "overall": {
+      "tracks": 304,
+      "duration_sec": 5592.91,
+      "metrics": {
+        "root": 0.5936,
+        "majmin": 0.5634,
+        "sevenths": 0.5062,
+        "mirex": 0.5634,
+        "overseg": 0.7453,
+        "underseg": 0.8678,
+        "seg": 0.7204
+      }
+    },
+    "comp": {
+      "tracks": 152,
+      "duration_sec": 2796.45,
+      "metrics": {
+        "root": 0.9176,
+        "majmin": 0.9038,
+        "sevenths": 0.8365,
+        "mirex": 0.9038,
+        "overseg": 0.8493,
+        "underseg": 0.9463,
+        "seg": 0.8471
+      }
+    },
+    "solo": {
+      "tracks": 152,
+      "duration_sec": 2796.45,
+      "metrics": {
+        "root": 0.2695,
+        "majmin": 0.223,
+        "sevenths": 0.1759,
+        "mirex": 0.223,
+        "overseg": 0.6412,
+        "underseg": 0.7893,
+        "seg": 0.5937
+      }
+    }
+  }
+}
