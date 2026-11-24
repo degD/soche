@@ -1,30 +1,45 @@
 import argparse
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
+import csv
 import json
 import os
 from pathlib import Path
+import random
+import re
 import shutil
 import tempfile
 from typing import Any
 import urllib.request
 import zipfile
 
+import librosa
 import mir_eval
 import numpy as np
 import numpy.typing as npt
+import soundfile as sf
 
 from soche.chords import PITCH_CLASSES, get_chords_file
 
 ZENODO_RECORD_URL = "https://zenodo.org/records/3371780/files"
+VOCALSET_API_URL = "https://zenodo.org/api/records/1442513"
+GROOVE_ZIP_URL = "https://storage.googleapis.com/magentadata/datasets/groove/groove-v1.0.0.zip"
+MIX_SR = 44_100
+GUITARSETPLUS_MIXES: tuple[str, ...] = ("vocals", "drums", "both")
+
 GUITARSET_ARCHIVES: tuple[tuple[str, str, str], ...] = (
     ("annotation.zip", "annotation", "*.jams"),
     ("audio_mono-mic.zip", "audio_mono-mic", "*.wav"),
 )
 METRIC_KEYS = ("root", "majmin", "sevenths", "mirex", "overseg", "underseg", "seg")
+STYLE_ORDER = ("comp", "solo", "vocals", "drums", "both")
 
 _MAJ_SEMITONES = np.array(mir_eval.chord.QUALITIES["maj"][:8])
 _MIN_SEMITONES = np.array(mir_eval.chord.QUALITIES["min"][:8])
+
+
+def _is_valid_audio_file(path: Path) -> bool:
+    return not path.name.startswith("._") and "__MACOSX" not in path.parts
 
 
 def _download_file(url: str, dest: Path) -> None:
@@ -47,6 +62,23 @@ def _download_file(url: str, dest: Path) -> None:
                 next_report += 25 * 1024 * 1024
 
 
+def _download_and_extract(url: str, target_dir: Path, archive_name: str, tmp_parent: Path) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=archive_name, suffix=".zip", dir=tmp_parent)
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        _download_file(url, tmp_path)
+        print(f"Extracting {archive_name} -> {target_dir}...")
+        with zipfile.ZipFile(tmp_path) as zf:
+            zf.extractall(target_dir)
+    except Exception:
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 def download_guitarset(data_dir: Path) -> None:
     """Download and extract GuitarSet annotations and mono-mic audio into data_dir."""
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -55,21 +87,295 @@ def download_guitarset(data_dir: Path) -> None:
         if target_dir.exists() and any(target_dir.rglob(marker_glob)):
             print(f"Found existing {subdir_name} in {target_dir}, skipping download.")
             continue
+        _download_and_extract(
+            f"{ZENODO_RECORD_URL}/{archive_name}?download=1",
+            target_dir,
+            archive_name,
+            data_dir,
+        )
 
-        target_dir.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(prefix=archive_name, suffix=".zip", dir=data_dir)
-        os.close(fd)
-        tmp_path = Path(tmp_name)
-        try:
-            _download_file(f"{ZENODO_RECORD_URL}/{archive_name}?download=1", tmp_path)
-            print(f"Extracting {archive_name} -> {target_dir}...")
-            with zipfile.ZipFile(tmp_path) as zf:
-                zf.extractall(target_dir)
-        except Exception:
-            shutil.rmtree(target_dir, ignore_errors=True)
-            raise
-        finally:
-            tmp_path.unlink(missing_ok=True)
+
+def _download_vocalset(sources_dir: Path) -> Path:
+    vocal_dir = sources_dir / "vocalset"
+    if vocal_dir.exists() and any(_is_valid_audio_file(p) for p in vocal_dir.rglob("*.wav")):
+        print(f"Found existing VocalSet in {vocal_dir}, skipping download.")
+        return vocal_dir
+
+    req = urllib.request.Request(VOCALSET_API_URL, headers={"User-Agent": "soche-eval/0.1"})
+    with urllib.request.urlopen(req) as resp:
+        record = json.loads(resp.read().decode("utf-8"))
+    zip_files = [f for f in record.get("files", []) if str(f.get("key", "")).lower().endswith(".zip")]
+    if not zip_files:
+        raise RuntimeError(f"No .zip archive found in VocalSet Zenodo record {VOCALSET_API_URL}")
+    entry = max(zip_files, key=lambda f: int(f.get("size", 0)))
+    links = entry.get("links", {})
+    url = links.get("self") or links.get("download")
+    if not url:
+        raise RuntimeError(f"Missing download URL for VocalSet file {entry.get('key')}")
+
+    _download_and_extract(url, vocal_dir, str(entry["key"]), sources_dir)
+    return vocal_dir
+
+
+def _download_groove(sources_dir: Path) -> Path:
+    groove_dir = sources_dir / "groove"
+    if (
+        groove_dir.exists()
+        and any(groove_dir.rglob("info.csv"))
+        and any(_is_valid_audio_file(p) for p in groove_dir.rglob("*.wav"))
+    ):
+        print(f"Found existing Groove MIDI Dataset in {groove_dir}, skipping download.")
+        return groove_dir
+
+    _download_and_extract(GROOVE_ZIP_URL, groove_dir, "groove-v1.0.0.zip", sources_dir)
+    return groove_dir
+
+
+def _active_rms(x: npt.NDArray[np.floating]) -> float:
+    if x.size == 0:
+        return 0.0
+    peak = float(np.max(np.abs(x)))
+    if peak <= 1e-12:
+        return 0.0
+    active = x[np.abs(x) > 0.01 * peak]
+    target = active if active.size > 0 else x
+    return float(np.sqrt(np.mean(target**2)))
+
+
+def _crossfade_concat(chunks: list[npt.NDArray[np.float64]], fade_samples: int) -> npt.NDArray[np.float64]:
+    out = chunks[0].copy()
+    for nxt in chunks[1:]:
+        fade = min(fade_samples, len(out) // 2, len(nxt) // 2)
+        if fade > 0:
+            w = np.linspace(0.0, 1.0, fade, dtype=np.float64)
+            blended = out[-fade:] * (1.0 - w) + nxt[:fade] * w
+            out = np.concatenate([out[:-fade], blended, nxt[fade:]])
+        else:
+            out = np.concatenate([out, nxt])
+    return out
+
+
+def _fit_length_loop(
+    x: npt.NDArray[np.float64],
+    n_samples: int,
+    fade_samples: int,
+    offset: int = 0,
+) -> npt.NDArray[np.float64]:
+    if x.size == 0:
+        return np.zeros(n_samples, dtype=np.float64)
+    if len(x) >= n_samples:
+        slack = len(x) - n_samples
+        start = offset % (slack + 1) if slack > 0 else 0
+        return x[start : start + n_samples]
+
+    reps = (n_samples // max(1, len(x) - fade_samples)) + 2
+    looped = _crossfade_concat([x] * reps, fade_samples)
+    return looped[:n_samples]
+
+
+def _normalize_peak(x: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    peak = float(np.max(np.abs(x))) if x.size else 0.0
+    return x * (0.95 / peak) if peak > 0.98 else x
+
+
+def _collect_vocal_pool(vocal_dir: Path) -> list[Path]:
+    all_wavs = sorted(p for p in vocal_dir.rglob("*.wav") if _is_valid_audio_file(p))
+    if not all_wavs:
+        raise FileNotFoundError(f"No VocalSet WAV files found under {vocal_dir}")
+    preferred = [
+        p for p in all_wavs if any(part in p.parts for part in ("excerpts", "arpeggios", "scales"))
+    ]
+    return preferred if preferred else all_wavs
+
+
+def _collect_groove_beats(groove_dir: Path) -> list[tuple[Path, float]]:
+    info_csv = next(groove_dir.rglob("info.csv"), None)
+    if info_csv is None:
+        raise FileNotFoundError(f"No info.csv found under {groove_dir}")
+
+    base_dir = info_csv.parent
+    beats: list[tuple[Path, float]] = []
+    with info_csv.open("r", encoding="utf-8") as fp:
+        for row in csv.DictReader(fp):
+            rel = (row.get("audio_filename") or "").strip()
+            if not rel or row.get("beat_type") != "beat":
+                continue
+            try:
+                bpm = float(row["bpm"])
+                dur = float(row["duration"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if dur < 5.0 or bpm <= 0.0:
+                continue
+            wav_path = base_dir / rel
+            if wav_path.is_file():
+                beats.append((wav_path, bpm))
+
+    if not beats:
+        raise RuntimeError(f"No valid drum beat audio entries found in {info_csv}")
+    return beats
+
+
+def _mix_one_track(task: dict[str, Any]) -> dict[str, Any]:
+    stem: str = task["stem"]
+    jams_path: Path = task["jams_path"]
+    guitar_wav: Path = task["guitar_wav"]
+    drum_wav: Path = task["drum_wav"]
+    vocal_wavs: list[Path] = task["vocal_wavs"]
+    plus_dir: Path = task["plus_dir"]
+    drum_offset: int = task["drum_offset"]
+
+    fade_samples = int(0.05 * MIX_SR)
+    guitar, _ = librosa.load(guitar_wav, sr=MIX_SR, mono=True)
+    guitar = np.asarray(guitar, dtype=np.float64)
+    n_samples = len(guitar)
+    g_rms = _active_rms(guitar)
+
+    drum_raw, _ = librosa.load(drum_wav, sr=MIX_SR, mono=True)
+    drum_trim, _ = librosa.effects.trim(np.asarray(drum_raw, dtype=np.float64), top_db=35)
+    if drum_trim.size == 0:
+        drum_trim = np.asarray(drum_raw, dtype=np.float64)
+    drums = _fit_length_loop(drum_trim, n_samples, fade_samples, offset=drum_offset)
+    d_rms = _active_rms(drums)
+    drums_scaled = drums * (g_rms / d_rms) if d_rms > 1e-12 else drums
+
+    vocal_chunks: list[npt.NDArray[np.float64]] = []
+    total_v = 0
+    used_vocals: list[str] = []
+    idx = 0
+    while total_v < n_samples + fade_samples:
+        v_path = vocal_wavs[idx % len(vocal_wavs)]
+        v_raw, _ = librosa.load(v_path, sr=MIX_SR, mono=True)
+        v_trim, _ = librosa.effects.trim(np.asarray(v_raw, dtype=np.float64), top_db=30)
+        if v_trim.size == 0:
+            v_trim = np.asarray(v_raw, dtype=np.float64)
+        vocal_chunks.append(v_trim)
+        used_vocals.append(v_path.name)
+        total_v += max(1, len(v_trim) - fade_samples)
+        idx += 1
+
+    vocals = _crossfade_concat(vocal_chunks, fade_samples)[:n_samples]
+    v_rms = _active_rms(vocals)
+    vocals_scaled = vocals * (g_rms / v_rms) if v_rms > 1e-12 else vocals
+
+    mixes = {
+        "vocals": _normalize_peak(guitar + vocals_scaled),
+        "drums": _normalize_peak(guitar + drums_scaled),
+        "both": _normalize_peak(guitar + vocals_scaled + drums_scaled),
+    }
+    for mix_name, audio in mixes.items():
+        out_path = plus_dir / mix_name / f"{stem}_mic.wav"
+        sf.write(out_path, audio, MIX_SR, subtype="PCM_16")
+
+    shutil.copy2(jams_path, plus_dir / "annotation" / f"{stem}.jams")
+    return {
+        "track_id": stem,
+        "guitar_bpm": task["guitar_bpm"],
+        "drum_file": drum_wav.name,
+        "drum_bpm": task["drum_bpm"],
+        "vocal_files": used_vocals,
+        "snr_db": 0.0,
+    }
+
+
+def build_guitarsetplus(
+    guitarset_dir: Path,
+    plus_dir: Path,
+    seed: int = 42,
+    workers: int = os.cpu_count() or 1,
+) -> None:
+    """Download VocalSet + Groove MIDI and build the guitarsetplus mixed benchmark."""
+    download_guitarset(guitarset_dir)
+    pairs = find_guitarset_pairs(guitarset_dir, split="comp")
+    expected = len(pairs)
+
+    manifest_path = plus_dir / "manifest.json"
+    ann_dir = plus_dir / "annotation"
+    if (
+        manifest_path.is_file()
+        and ann_dir.is_dir()
+        and len(list(ann_dir.glob("*.jams"))) == expected
+        and all(len(list((plus_dir / m).glob("*.wav"))) == expected for m in GUITARSETPLUS_MIXES)
+    ):
+        print(f"Found existing guitarsetplus ({expected} x 3 mixes) in {plus_dir}, skipping build.")
+        return
+
+    sources_dir = plus_dir / "_sources"
+    sources_dir.mkdir(parents=True, exist_ok=True)
+    vocal_dir = _download_vocalset(sources_dir)
+    groove_dir = _download_groove(sources_dir)
+
+    vocal_pool = _collect_vocal_pool(vocal_dir)
+    groove_beats = _collect_groove_beats(groove_dir)
+
+    rng = random.Random(seed)
+    shuffled_vocals = vocal_pool.copy()
+    rng.shuffle(shuffled_vocals)
+
+    ann_dir.mkdir(parents=True, exist_ok=True)
+    for m in GUITARSETPLUS_MIXES:
+        (plus_dir / m).mkdir(parents=True, exist_ok=True)
+
+    drum_usage: Counter[Path] = Counter()
+    tasks: list[dict[str, Any]] = []
+    v_cursor = 0
+    for stem, jams_path, wav_path in pairs:
+        bpm_match = re.search(r"-(\d+)-", stem)
+        target_bpm = float(bpm_match.group(1)) if bpm_match else 120.0
+
+        cands = [(p, b) for p, b in groove_beats if abs(b - target_bpm) <= 5.0]
+        if len(cands) < 3:
+            cands = [(p, b) for p, b in groove_beats if abs(b - target_bpm) <= 10.0]
+        if not cands:
+            cands = sorted(groove_beats, key=lambda item: abs(item[1] - target_bpm))[:10]
+
+        min_use = min(drum_usage[p] for p, _ in cands)
+        least_used = [(p, b) for p, b in cands if drum_usage[p] == min_use]
+        drum_wav, drum_bpm = rng.choice(least_used)
+        drum_usage[drum_wav] += 1
+
+        # Supply 8 shuffled vocal clips per track so trimmed speech/singing covers >30s.
+        v_slice = [
+            shuffled_vocals[(v_cursor + k) % len(shuffled_vocals)]
+            for k in range(8)
+        ]
+        v_cursor += 8
+
+        tasks.append(
+            {
+                "stem": stem,
+                "jams_path": jams_path,
+                "guitar_wav": wav_path,
+                "guitar_bpm": target_bpm,
+                "drum_wav": drum_wav,
+                "drum_bpm": drum_bpm,
+                "drum_offset": rng.randint(0, 10 * MIX_SR),
+                "vocal_wavs": v_slice,
+                "plus_dir": plus_dir,
+            }
+        )
+
+    print(f"Mixing {len(tasks)} guitarsetplus tracks x {len(GUITARSETPLUS_MIXES)} variants...")
+    if workers <= 1 or len(tasks) <= 1:
+        entries = [_mix_one_track(t) for t in tasks]
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            entries = list(pool.map(_mix_one_track, tasks))
+
+    manifest = {
+        "dataset": "guitarsetplus",
+        "seed": seed,
+        "sample_rate": MIX_SR,
+        "snr_db": 0.0,
+        "sources": {
+            "guitar": "GuitarSet comp (CC BY 4.0)",
+            "vocals": "VocalSet (CC BY 4.0, Zenodo 1442513)",
+            "drums": "Magenta Groove MIDI Dataset (CC BY 4.0)",
+        },
+        "tracks": entries,
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(f"Built guitarsetplus in {plus_dir} ({len(entries)} tracks x 3 mixes).")
 
 
 def soche_to_harte(label: str) -> str:
@@ -144,6 +450,29 @@ def find_guitarset_pairs(
     return pairs
 
 
+def find_guitarsetplus_pairs(
+    data_dir: Path,
+    mix: str = "all",
+) -> list[tuple[str, str, Path, Path]]:
+    """Pair guitarsetplus JAMS files with their vocals/drums/both mixed WAV files."""
+    ann_dir = data_dir / "annotation"
+    if not ann_dir.is_dir():
+        return []
+
+    mix_names = GUITARSETPLUS_MIXES if mix == "all" else (mix,)
+    pairs: list[tuple[str, str, Path, Path]] = []
+    for mix_name in mix_names:
+        mix_dir = data_dir / mix_name
+        for jams_path in sorted(ann_dir.glob("*.jams")):
+            stem = jams_path.stem
+            wav_path = mix_dir / f"{stem}_mic.wav"
+            if not wav_path.is_file():
+                raise FileNotFoundError(f"Missing mixed audio file {wav_path} for {jams_path}")
+            pairs.append((f"{mix_name}/{stem}", mix_name, jams_path, wav_path))
+
+    return pairs
+
+
 def _canonical_majmin_label(label: str) -> str:
     """Normalize a Harte chord label to canonical maj/min/N (falling back to original)."""
     if label == "N":
@@ -177,9 +506,9 @@ def _filter_supported_label(label: str) -> str:
     return "X"
 
 
-def evaluate_track(task: tuple[str, Path, Path, str, bool]) -> dict[str, Any]:
-    """Run SOCHE chord extraction and mir_eval scoring on a single GuitarSet track."""
-    track_id, jams_path, wav_path, chord_source, supported_only = task
+def evaluate_track(task: tuple[str, str | None, Path, Path, str, bool]) -> dict[str, Any]:
+    """Run SOCHE chord extraction and mir_eval scoring on a single track."""
+    track_id, style_override, jams_path, wav_path, chord_source, supported_only = task
     ref_intervals, ref_labels = load_guitarset_chords(jams_path, source=chord_source)
     if supported_only:
         ref_labels = [_filter_supported_label(lbl) for lbl in ref_labels]
@@ -231,7 +560,9 @@ def evaluate_track(task: tuple[str, Path, Path, str, bool]) -> dict[str, Any]:
             continue
         confusions[(canon_ref, canon_est)] += float(dur)
 
-    if track_id.endswith("_comp"):
+    if style_override is not None:
+        style = style_override
+    elif track_id.endswith("_comp"):
         style = "comp"
     elif track_id.endswith("_solo"):
         style = "solo"
@@ -259,7 +590,7 @@ def _weighted_summary(results: list[dict[str, Any]]) -> dict[str, float]:
 
 def _print_report(results: list[dict[str, Any]]) -> None:
     subsets = [("Overall", results)]
-    for style in ("comp", "solo"):
+    for style in STYLE_ORDER:
         subset = [r for r in results if r["style"] == style]
         if subset:
             subsets.append((style, subset))
@@ -313,15 +644,15 @@ def _save_benchmark(
     args: argparse.Namespace,
 ) -> None:
     subsets = {"overall": results}
-    for style in ("comp", "solo"):
+    for style in STYLE_ORDER:
         subset = [r for r in results if r["style"] == style]
         if subset:
             subsets[style] = subset
 
-    payload = {
-        "dataset": "guitarset",
+    payload: dict[str, Any] = {
+        "dataset": args.dataset,
         "chord_source": args.chord_source,
-        "split": args.split,
+        "split": args.mix if args.dataset == "guitarsetplus" else args.split,
         "supported_only": args.supported_only,
         "subsets": {
             name: {
@@ -338,12 +669,16 @@ def _save_benchmark(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate SOCHE chord extraction on GuitarSet.")
-    parser.add_argument("--data-dir", type=Path, default=Path("audio/guitarset"))
-    parser.add_argument("--download", action="store_true", help="Download GuitarSet if missing.")
-    parser.add_argument("--download-only", action="store_true", help="Download GuitarSet and exit.")
+    parser = argparse.ArgumentParser(description="Evaluate SOCHE chord extraction on GuitarSet / GuitarSetPlus.")
+    parser.add_argument("--dataset", choices=("guitarset", "guitarsetplus"), default="guitarset")
+    parser.add_argument("--data-dir", type=Path, default=None)
+    parser.add_argument("--guitarset-dir", type=Path, default=Path("audio/guitarset"))
+    parser.add_argument("--download", action="store_true", help="Download/build dataset if missing.")
+    parser.add_argument("--download-only", action="store_true", help="Download/build dataset and exit.")
     parser.add_argument("--split", choices=("all", "comp", "solo"), default="all")
+    parser.add_argument("--mix", choices=("all", "vocals", "drums", "both"), default="all")
     parser.add_argument("--chord-source", choices=("performed", "instructed"), default="performed")
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--supported-only",
         action="store_true",
@@ -354,25 +689,47 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     args = parser.parse_args()
 
+    data_dir = args.data_dir or (
+        Path("audio/guitarsetplus") if args.dataset == "guitarsetplus" else Path("audio/guitarset")
+    )
+
     if args.download:
-        download_guitarset(args.data_dir)
+        if args.dataset == "guitarsetplus":
+            build_guitarsetplus(args.guitarset_dir, data_dir, seed=args.seed, workers=args.workers)
+        else:
+            download_guitarset(data_dir)
         if args.download_only:
             return
 
-    pairs = find_guitarset_pairs(args.data_dir, split=args.split)
-    if not pairs:
-        raise SystemExit(
-            f"No GuitarSet tracks found in {args.data_dir}. Run with --download first."
-        )
-    if args.limit is not None:
-        pairs = pairs[: max(0, args.limit)]
+    if args.dataset == "guitarsetplus":
+        plus_pairs = find_guitarsetplus_pairs(data_dir, mix=args.mix)
+        if not plus_pairs:
+            raise SystemExit(
+                f"No guitarsetplus tracks found in {data_dir}. Run with --dataset guitarsetplus --download first."
+            )
+        if args.limit is not None:
+            plus_pairs = plus_pairs[: max(0, args.limit)]
+        tasks = [
+            (tid, mix_name, jams_p, wav_p, args.chord_source, args.supported_only)
+            for tid, mix_name, jams_p, wav_p in plus_pairs
+        ]
+        scope_tag = f"mix={args.mix}"
+    else:
+        pairs = find_guitarset_pairs(data_dir, split=args.split)
+        if not pairs:
+            raise SystemExit(
+                f"No GuitarSet tracks found in {data_dir}. Run with --download first."
+            )
+        if args.limit is not None:
+            pairs = pairs[: max(0, args.limit)]
+        tasks = [
+            (tid, None, jams_p, wav_p, args.chord_source, args.supported_only)
+            for tid, jams_p, wav_p in pairs
+        ]
+        scope_tag = f"split={args.split}"
 
-    tasks = [
-        (tid, jams_p, wav_p, args.chord_source, args.supported_only)
-        for tid, jams_p, wav_p in pairs
-    ]
     mode_tag = ", supported-only" if args.supported_only else ""
-    print(f"Evaluating {len(tasks)} GuitarSet tracks ({args.chord_source}, split={args.split}{mode_tag})...")
+    print(f"Evaluating {len(tasks)} {args.dataset} tracks ({args.chord_source}, {scope_tag}{mode_tag})...")
 
     if args.workers <= 1 or len(tasks) <= 1:
         results = [evaluate_track(task) for task in tasks]
