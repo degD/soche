@@ -164,10 +164,25 @@ def _canonical_majmin_label(label: str) -> str:
     return label
 
 
-def evaluate_track(task: tuple[str, Path, Path, str]) -> dict[str, Any]:
+def _filter_supported_label(label: str) -> str:
+    """Keep only chords in SOCHE's vocabulary (maj, min, 7, N); mask others as 'X'."""
+    if label in ("N", "X"):
+        return label
+    try:
+        root, qual, ext, _ = mir_eval.chord.split(label)
+    except Exception:
+        return "X"
+    if not ext and qual in ("maj", "min", "7"):
+        return f"{root}:{qual}"
+    return "X"
+
+
+def evaluate_track(task: tuple[str, Path, Path, str, bool]) -> dict[str, Any]:
     """Run SOCHE chord extraction and mir_eval scoring on a single GuitarSet track."""
-    track_id, jams_path, wav_path, chord_source = task
+    track_id, jams_path, wav_path, chord_source, supported_only = task
     ref_intervals, ref_labels = load_guitarset_chords(jams_path, source=chord_source)
+    if supported_only:
+        ref_labels = [_filter_supported_label(lbl) for lbl in ref_labels]
     ref_end = float(ref_intervals[-1, 1])
 
     segments = get_chords_file(wav_path)
@@ -179,7 +194,21 @@ def evaluate_track(task: tuple[str, Path, Path, str]) -> dict[str, Any]:
         est_intervals = np.asarray([[0.0, ref_end]], dtype=np.float64)
         est_labels = ["N"]
 
-    scores = mir_eval.chord.evaluate(ref_intervals, ref_labels, est_intervals, est_labels)
+    if supported_only:
+        eval_dur = float(
+            sum(
+                float(e - s)
+                for (s, e), lbl in zip(ref_intervals, ref_labels)
+                if lbl != "X"
+            )
+        )
+    else:
+        eval_dur = float(np.sum(ref_intervals[:, 1] - ref_intervals[:, 0]))
+
+    if eval_dur > 0.0:
+        scores = mir_eval.chord.evaluate(ref_intervals, ref_labels, est_intervals, est_labels)
+    else:
+        scores = {k: 0.0 for k in METRIC_KEYS}
 
     adj_intervals, adj_labels = mir_eval.util.adjust_intervals(
         est_intervals,
@@ -209,11 +238,10 @@ def evaluate_track(task: tuple[str, Path, Path, str]) -> dict[str, Any]:
     else:
         style = "other"
 
-    total_dur = float(np.sum(ref_intervals[:, 1] - ref_intervals[:, 0]))
     return {
         "track_id": track_id,
         "style": style,
-        "duration": total_dur,
+        "duration": eval_dur,
         "scores": {k: float(scores[k]) for k in METRIC_KEYS},
         "confusions": dict(confusions),
     }
@@ -244,8 +272,9 @@ def _print_report(results: list[dict[str, Any]]) -> None:
     for name, subset in subsets:
         summary = _weighted_summary(subset)
         dur = sum(r["duration"] for r in subset)
+        n_active = sum(1 for r in subset if r["duration"] > 0.0)
         cols = " ".join(f"{summary[k]:8.4f}" for k in METRIC_KEYS)
-        print(f"{name:<10} {len(subset):>6} {dur:>8.1f} {cols}")
+        print(f"{name:<10} {n_active:>6} {dur:>8.1f} {cols}")
 
     total_dur = sum(r["duration"] for r in results)
     merged_confusions: dict[tuple[str, str], float] = defaultdict(float)
@@ -262,8 +291,8 @@ def _print_report(results: list[dict[str, Any]]) -> None:
             pct = 100.0 * dur / total_dur if total_dur > 0 else 0.0
             print(f"{ref_lbl:<14} {est_lbl:<14} {dur:>9.1f} {pct:>7.2f}%")
 
-    comp_results = [r for r in results if r["style"] == "comp"]
-    worst_source = comp_results if comp_results else results
+    comp_results = [r for r in results if r["style"] == "comp" and r["duration"] > 0.0]
+    worst_source = comp_results if comp_results else [r for r in results if r["duration"] > 0.0]
     worst_label = "comp" if comp_results else "overall"
     worst = sorted(worst_source, key=lambda r: r["scores"]["majmin"])[:5]
     if worst:
@@ -278,6 +307,36 @@ def _print_report(results: list[dict[str, Any]]) -> None:
             )
 
 
+def _save_benchmark(
+    save_path: Path,
+    results: list[dict[str, Any]],
+    args: argparse.Namespace,
+) -> None:
+    subsets = {"overall": results}
+    for style in ("comp", "solo"):
+        subset = [r for r in results if r["style"] == style]
+        if subset:
+            subsets[style] = subset
+
+    payload = {
+        "dataset": "guitarset",
+        "chord_source": args.chord_source,
+        "split": args.split,
+        "supported_only": args.supported_only,
+        "subsets": {
+            name: {
+                "tracks": sum(1 for r in subset if r["duration"] > 0.0),
+                "duration_sec": round(sum(r["duration"] for r in subset), 2),
+                "metrics": {k: round(v, 4) for k, v in _weighted_summary(subset).items()},
+            }
+            for name, subset in subsets.items()
+        },
+    }
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    save_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    print(f"\nSaved benchmark to {save_path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate SOCHE chord extraction on GuitarSet.")
     parser.add_argument("--data-dir", type=Path, default=Path("audio/guitarset"))
@@ -285,6 +344,12 @@ def main() -> None:
     parser.add_argument("--download-only", action="store_true", help="Download GuitarSet and exit.")
     parser.add_argument("--split", choices=("all", "comp", "solo"), default="all")
     parser.add_argument("--chord-source", choices=("performed", "instructed"), default="performed")
+    parser.add_argument(
+        "--supported-only",
+        action="store_true",
+        help="Mask reference chords outside SOCHE's vocabulary (maj, min, 7, N) as 'X'.",
+    )
+    parser.add_argument("--save", type=Path, default=None, help="Save summary JSON to PATH.")
     parser.add_argument("--limit", type=int, default=None, help="Evaluate at most N tracks.")
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     args = parser.parse_args()
@@ -302,8 +367,12 @@ def main() -> None:
     if args.limit is not None:
         pairs = pairs[: max(0, args.limit)]
 
-    tasks = [(tid, jams_p, wav_p, args.chord_source) for tid, jams_p, wav_p in pairs]
-    print(f"Evaluating {len(tasks)} GuitarSet tracks ({args.chord_source}, split={args.split})...")
+    tasks = [
+        (tid, jams_p, wav_p, args.chord_source, args.supported_only)
+        for tid, jams_p, wav_p in pairs
+    ]
+    mode_tag = ", supported-only" if args.supported_only else ""
+    print(f"Evaluating {len(tasks)} GuitarSet tracks ({args.chord_source}, split={args.split}{mode_tag})...")
 
     if args.workers <= 1 or len(tasks) <= 1:
         results = [evaluate_track(task) for task in tasks]
@@ -312,6 +381,8 @@ def main() -> None:
             results = list(pool.map(evaluate_track, tasks))
 
     _print_report(results)
+    if args.save is not None:
+        _save_benchmark(args.save, results, args)
 
 
 if __name__ == "__main__":
